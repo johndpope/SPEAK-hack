@@ -1,0 +1,1716 @@
+Listen, Disentangle, and Control: Controllable Speech-Driven Talking Head Generation
+Changpeng Cai1,2*, Guinan Guo 3*, Jiao Li 1*, Junhao Su 2*,
+Chenghao He 5, Jing Xiao 1, Yuanxu Chen 1, Lei Dai 1, Feiyu Zhu 4†
+1 Ping An Technology
+2 Southeast University
+3 Sun Yat-sen University
+4 University of Shanghai for Science and Technology
+5 East China University of Science and Technology
+(2018)
+Abstract.
+Most earlier investigations on talking face generation have focused on the synchronization of lip motion and speech content. However, human head pose and facial emotions are equally important characteristics of natural human faces. While audio-driven talking face generation has seen notable advancements, existing methods either overlook facial emotions or are limited to specific individuals and cannot be applied to arbitrary subjects. In this paper, we propose a one-shot Talking Head Generation framework (SPEAK) that distinguishes itself from general Talking Face Generation by enabling emotional and postural control. Specifically, we introduce the Inter-Reconstructed Feature Disentanglement (IRFD) method to decouple human facial features into three latent spaces. We then design a face editing module that modifies speech content and facial latent codes into a single latent space. Subsequently, we present a novel generator that employs modified latent codes derived from the editing module to regulate emotional expression, head poses, and speech content in synthesizing facial animations. Extensive trials demonstrate that our method can generate realistic talking head with coordinated lip motions, authentic facial emotions, and smooth head movements. The demo video is available at the anonymous link: https://anonymous.4open.science/r/SPEAK-F56E.
+
+Talking Head, Features Disentanglement, One-shot Learning
+†copyright: acmlicensed
+†journalyear: 2018
+†doi: XXXXXXX.XXXXXXX
+†isbn: 978-1-4503-XXXX-X/18/06
+†ccs: Computing methodologies →Talking Head Generation; Features Disentanglement
+Refer to caption
+Figure 1.Illustration of Speech-Driven Pose and Emotion-Adjustable Talking Head Generation(SPEAK). SPEAK adopts a single frame as the reference identity and utilizes it to generate realistic audio-driven talking heads with pose and emotion that can be adjusted using pose and emotion source video clips. The mouth shape and posture of the generated frames are aligned with the input audio and pose, and the emotion matches the emotion source on the left. This framework is capable of capturing the subtle variations in facial emotions and speech patterns, resulting in highly naturalistic and expressive talking heads.
+1.Introduction
+Talking face generation is a critical technology requirement for multimedia applications, particularly digital human animation (Liu et al., 2015; Edwards et al., 2016), visual dubbing in movies (Kim et al., 2019), etc.
+
+One of the most challenging aspects of this undertaking is that human speech is frequently accompanied by non-linguistic elements, such as head posture and facial emotions  (Williams and Stevens, 1972), which are important for talking face generation. Researchers have been using analogous methods in this approach for many years because of the rapid development of deep learning and the widespread use of related technology. Modern technologies can simulate lip movements that are perfectly synchronized with the audio speech (Chen et al., 2019; Prajwal et al., 2020); however, the faces in such videos are generally emotionless. Most prior studies (Chung et al., 2017; Suwajanakorn et al., 2017; Zhou et al., 2019; Song et al., 2022), have chosen to maintain the original pose in a video. Thus how to make the talking face in the generated video to expressive emotion is still an open problem.
+
+In real-world scenarios, when different individuals speak the same words, their facial emotions and head poses come with individual stylistic features. Even for the same person, the facial emotions and head poses can vary when speaking the same sentence in different situations. Due to these pronounced diversities, the creation of talking heads with controllable head poses and emotions remains a significant challenge. In previous works Chen et al. (Chen et al., 2020; Zhou et al., 2021; Eskimez et al., 2021) can only control one of facial emotions and head motion. Although some recent methods (Ji et al., 2022) focus on the specific kind of motions in talking face animation and struggle to synthesize high-quality video. (Ma et al., 2023) adopt 3D information as intermediate representations, resulting in limitations on pose control and facial generation quality. Thus, controlling the speaker’s head pose and facial emotions end-to-end is highly desirable.
+
+To address these challenges, this paper presents a pioneering framework distinct from general Talking Face Generation, known as Speech-Driven Pose and Emotion-Adjustable Talking Head Generation (SPEAK). As illustrated in Figure 1, our objective is to create realistic talking videos utilizing four input types: an identity source image exhibiting a neutral expression, a spoken source audio, a pose source video, and an emotion source video.
+
+In detail, we initially disentangle the identity image, pose video, and emotion video into their corresponding latent spaces through an innovative Inter-Reconstructed Feature Disentanglement (IRFD) module. To amalgamate facial identity features, head pose features, mouth movements, and local emotion representations. we empirically explored the intrinsic mechanisms of facial motion. We identified a compelling trait: the emotion representations encompass a portion of the mouth movement representations. Consequently, we designed an editing module to align and merge these features. Ultimately, an image generator employs the aligned features as input to produce the talking head.
+
+Our contributions are summarized as follows:
+
+• We propose the Speech-Driven Pose and Emotion-Adjustable Talking Head Generation (SPEAK) framework, which is the first attempt in one-shot speech-driven talking head generation approaches to achieve pose and emotion free control.
+• We present a self-supervised Inter-Reconstructed Feature disentanglement(IRFD) module that can independently distill emotion, identity and pose information to latent space from reference single frame. We do not need to do substantial preprocessing on the training data because the emotion and head poses are learned in the implicit space.
+• We introduce an editing module, to combine facial emotions, identity, and posture information embedding with speech content latent codes, resulting in more accurate and realistic audio-driven talking head generation.
+2.Related Work
+2.1.Audio-Driven Talking Face Generation
+Traditional algorithms (Bregler et al., 1997) relate the audio’s sound to the shape and lip movement of the speaker. With the advancement of deep learning, various strategies for generating landmark content using temporal modeling have been proposed (Suwajanakorn et al., 2017; Fan et al., 2015). Chung et al. (Chung et al., 2017) generated synchronized talking face video frames by embedding the aligned face by landmarks and audio together. Prajwal et al. (Prajwal et al., 2020; Zhou et al., 2019; Wang et al., 2022) proposed a block by concentrating on the mouth area of the input image to improve lip synchronization. Chen et al. (Chen et al., 2019) proposed a cascade generative adversarial network (GAN) strategy for generating talking faces and then predicting landmarks. However, past methods typically lacked head movements and facial emotions, making the generated talking faces appear unnatural.
+
+2.2.Video-driven Talking Face Generation
+Our study is also concerned with graphically driven talking faces. Facial emotions and small head movements were transferred from the source video frames to target video frames using video-driven talking face generation methods (Kim et al., 2018; Zhang et al., 2019; Zakharov et al., 2019; Pumarola et al., [n. d.]; Thies et al., 2016). However, because the source video guides the head motions and facial emotions, these approaches can only generate predetermined talking head movements and emotions that are consistent with the source.
+
+2.3.Emotion Conditional Talking Face Generation
+Although the emotional depiction of the face is crucial, past techniques have always ignored it. There have been only a few studies on emotion conditional talking face generation (Cosatto and Graf, 2000; Thies et al., 2020; Eskimez et al., 2021; Zhang et al., 2021b; Ji et al., 2022). Cosatto et al. (Cosatto and Graf, 2000; Thies et al., 2020) used a 3D head model to project face information. However, due to inherent flaws, the resulting expressions lack variability. Eskimez et al. (Eskimez et al., 2021) included emotion control in the talking face generation. To control generated emotions, they employed emotion categorization as a network of inputs that is constrained by emotion discriminative loss. Ji et al. (Ji et al., 2022) designed an Emotion-Aware Motion Model to generate video by learning the facial key points movements and the implicit emotions displacement from the given audio. But the emotion may be a presonalized factor, so the generated video sometimes seems to be unnatural. In this paper, we combine four types of input information to implement talking head generation, which effectively fills the gaps in the above-mentioned previous research on the lack of motion and emotion, and unnatural face of talking face generation.
+
+Refer to caption
+Figure 2.An illustration of the training strategy for IRFD module. Here, 
+𝑆
+ and 
+𝑇
+ represent randomly matched source and target video clips sample pairs with different or the same identity, facial emotions and head pose. 
+𝑖
+ and 
+𝑗
+ denote identities, 
+𝑚
+ and 
+𝑛
+ means facial emotions, 
+𝑝
+ and 
+𝑞
+ denote head pose. 
+𝑆
+ and 
+𝑇
+ are disentangled by the encoders into three features: identity, facial emotions, and head pose. Subsequently, these disentangled features are recombined using random factors and reconstructed into a pair of faces by the generator 
+𝐺
+𝑑
+. Finally, by utilizing the reconstructed facial disentangled features and the original frame disentangled features, the self-supervision can be achieved.
+3.Method
+In this section, we first introduce IRFD that learns the disentangled emotion, identity, pose information from the reference video clips(Sec.3.1). And We use a transformer encoder to extract audio content features with audio encoder which follows wav2vec 2.0 (Baevski et al., 2020)(Sec.3.2).A subsequent step involves aligning the audio content and facial information modalities using the editing module(Sec.3.2). Finally, we introduce our generator and generating process(Sec.3.3). In the following sections, we describe each module of our method in detail.
+
+3.1.IRFD
+To generate a talking head with controlled pose and facial emotions. The pose, facial emotions, and identity features must be decoupled separately from the raw spaces of the latent face. Facial emotions and pose features are classified as face dynamic attributes, whereas identity features are classified as face static attributes. The high-level facial features are then decomposed into three low-level latent feature spaces, which reflect head pose, facial emotions, and identity by IRFD module.
+
+3.1.1.Training of Disentanglement Module.
+To train our disentanglement module, we employ datasets of spontaneous facial emotions (Chung and Zisserman, 2017a; He et al., 2016). As illustrated in Figure 2, we first use three encoders(i.e, 
+𝐸
+𝑒
+, 
+𝐸
+𝑖
+, 
+𝐸
+𝑝
+) to extract the embeddings(
+𝐸
+𝑒
+​
+(
+𝑆
+)
+, 
+𝐸
+𝑖
+​
+(
+𝑆
+)
+, 
+𝐸
+𝑝
+​
+(
+𝑆
+)
+, 
+𝐸
+𝑒
+​
+(
+𝑇
+)
+, 
+𝐸
+𝑖
+​
+(
+𝑇
+)
+, 
+𝐸
+𝑝
+​
+(
+𝑇
+)
+) from the reference video clips 
+𝑆
+, 
+𝑇
+. Subsequently, we randomly swap one type of facial feature code and concatenate two sets of facial feature information extracted from 
+𝑆
+ and 
+𝑇
+, which are then fed into the IRFD generator 
+𝐺
+𝑑
+ (Karras et al., 2020) to generate two fake facial images, denoted as 
+𝐼
+𝑑
+. To independently extract the emotion, pose and identity lie in a pairs face images 
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+ and 
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+ with identity 
+𝑖
+ and 
+𝑗
+, emotion 
+𝑚
+ and 
+𝑛
+, pose 
+𝑝
+ and 
+𝑞
+. Three encoders 
+𝐸
+𝑒
+, 
+𝐸
+𝑖
+, 
+𝐸
+𝑝
+ are leveraged for embedding the three information respectively. From an intuitive standpoint, if the three representations are entirely disentangled, we can leverage the information in both identity embedding 
+𝐸
+𝑖
+​
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
+, emotion embedding 
+𝐸
+𝑒
+​
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+ and pose embedding 
+𝐸
+𝑝
+​
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+ to reconstruct the face 
+𝑇
+𝑖
+,
+𝑛
+,
+𝑞
+′
+ from a generator 
+𝐺
+𝑑
+. Specially, we use a emotion classified model (Lin et al., 2022) as a option to supervise the extraction of emotion features. Given that each sample provides three types of beneficial information for Inter-Reconstruction, the disentanglement can be finally achieved.
+
+Refer to caption
+Figure 3.Illustration of our proposed Talking Head Generation Framework. Our framework first extracts human face. To begin with, We employ the IRFD to decouple facial features from video clips 
+𝐼
+,
+𝑃
+(
+1
+:
+𝑖
+)
+,
+𝐸
+​
+𝑚
+(
+1
+:
+𝑖
+)
+ onto the latent space
+𝑓
+𝐼
+𝑖
+, 
+𝑓
+𝑃
+𝑖
+, 
+𝑓
+𝐸
+𝑖
+. An audio encoder encodes speech wavform into audio content features 
+𝑓
+𝑎
+(
+1
+:
+𝑖
+)
+. Then the editing module aligning audio content 
+𝑓
+𝑎
+(
+1
+:
+𝑖
+)
+ and facial information 
+𝑓
+𝑅
+(
+1
+:
+𝑖
+)
+′
+ modalities. TCN: temporal convolutional network; mlp: multi-layer perceptron.
+We supervise the training process with a loss function including five parts: identity loss, classification loss, pose loss , emotion loss and self-loss.
+
+In order to increase the distance between different identities in the implicit space and reduce the distance between the same identities in the implicit space, we define formulate the identity loss as :
+
+(1)		
+ℒ
+𝑖
+​
+𝑑
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑖
+​
+𝑡
+​
+𝑦
+=
+𝑚
+𝑎
+𝑥
+(
+|
+|
+𝐸
+𝑖
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
+−
+𝐸
+𝑖
+(
+𝐼
+𝑑
+(
+𝑖
+,
+𝑛
+,
+𝑞
+)
+)
+|
+|
+2
+−
+|
+|
+𝐸
+𝑖
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+−
+𝐸
+𝑖
+(
+𝐼
+𝑑
+(
+𝑗
+,
+𝑚
+,
+𝑝
+)
+)
+|
+|
+2
++
+𝛼
+,
+0
+)
+where 
+𝛼
+ is constant value.
+
+To assist the 
+𝐸
+𝑒
+ in mapping samples with the same emotion into clustered groups in the latent space, we add a classifier 
+𝐶
+𝑚
+ for emotion embedding and an extra classification loss defined as:
+
+(2)		
+ℒ
+𝑐
+​
+𝑙
+​
+𝑠
+=
+−
+∑
+𝑖
+=
+1
+𝑁
+(
+𝑦
+𝑖
+​
+𝑙
+​
+𝑜
+​
+𝑔
+​
+(
+𝑝
+𝑖
+)
+)
+,
+here, 
+𝑁
+ denotes the number of various emotion types, 
+𝑦
+𝑖
+ denotes the ground truth, 
+𝑝
+𝑖
+ denotes the label with the probability of network prediction.
+
+Besides, we denote the loss of pose to constrain the samples with the same head pose to share similar pose embedding:
+
+(3)		
+ℒ
+𝑝
+​
+𝑜
+​
+𝑠
+​
+𝑒
+=
+‖
+𝐸
+𝑝
+​
+(
+𝐼
+𝑑
+​
+(
+𝑗
+,
+𝑚
+,
+𝑝
+)
+)
+−
+𝐸
+𝑝
+​
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
+‖
+2
++
+‖
+𝐸
+𝑝
+​
+(
+𝐼
+𝑑
+​
+(
+𝑖
+,
+𝑛
+,
+𝑞
+)
+)
+−
+𝐸
+𝑝
+​
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+‖
+2
+.
+In order to encourage the 
+𝐸
+𝑒
+ to map samples with the same emotion in the latent space, we add emotion loss defined as:
+
+(4)		
+ℒ
+𝑒
+​
+𝑚
+​
+𝑜
+​
+𝑡
+​
+𝑖
+​
+𝑜
+​
+𝑛
+=
+‖
+𝐸
+𝑒
+​
+(
+𝐼
+𝑑
+​
+(
+𝑗
+,
+𝑚
+,
+𝑝
+)
+)
+−
+𝐸
+𝑒
+​
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
+‖
+2
++
+‖
+𝐸
+𝑒
+​
+(
+𝐼
+𝑑
+​
+(
+𝑖
+,
+𝑛
+,
+𝑞
+)
+)
+−
+𝐸
+𝑒
+​
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+‖
+2
+.
+In addition to Inter-Reconstruction, we require that the network reconstruct each of the original input samples, the total self-loss 
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+ is obtained by summing the self-losses of both the source 
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+1
+ and the target 
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+2
+. Self-loss calculates the distance between generated and original frames; for clarity, it’s not shown in Figure 2.
+
+(5)		
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+1
+=
+|
+|
+𝐺
+𝑑
+(
+𝐸
+𝑖
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
++
+𝐸
+𝑒
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
++
+𝐸
+𝑝
+(
+𝑆
+𝑖
+,
+𝑚
+,
+𝑝
+)
+)
+−
+𝐼
+𝑑
+(
+𝑖
+,
+𝑚
+,
+𝑝
+)
+|
+|
+2
+,
+(6)		
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+2
+=
+|
+|
+𝐺
+𝑑
+(
+𝐸
+𝑖
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
++
+𝐸
+𝑒
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
++
+𝐸
+𝑝
+(
+𝑇
+𝑗
+,
+𝑛
+,
+𝑞
+)
+)
+−
+𝐼
+𝑑
+(
+𝑗
+,
+𝑛
+,
+𝑞
+)
+|
+|
+2
+,
+(7)		
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+=
+𝐿
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+1
++
+𝐿
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+2
+.
+The above losses are combined together into:
+
+(8)		
+ℒ
+𝑑
+​
+𝑖
+​
+𝑠
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑎
+​
+𝑛
+​
+𝑔
+​
+𝑙
+​
+𝑒
+​
+𝑚
+​
+𝑒
+​
+𝑛
+​
+𝑡
+=
+ℒ
+𝑖
+​
+𝑑
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑖
+​
+𝑡
+​
+𝑦
++
+ℒ
+𝑐
+​
+𝑙
+​
+𝑠
++
+ℒ
+𝑝
+​
+𝑜
+​
+𝑠
+​
+𝑒
++
+ℒ
+𝑒
+​
+𝑚
+​
+𝑜
+​
+𝑡
+​
+𝑖
+​
+𝑜
+​
+𝑛
++
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+.
+3.2.Talking Head Generation
+3.2.1.Audio Encoder.
+Building on the FaceFormer (Fan et al., 2022), our method utilizes the state-of-the-art (SOTA) self-supervised pre-trained speech model, wav2vec 2.0 (Baevski et al., 2020), as the architecture for our speech encoder. The model is comprised of an audio feature extractor and a multi-layer transformer encoder. The audio feature extractor leverages a temporal convolutional network (TCN) to transform the speech raw waveform into feature vectors. The transformer encoder then generates contextualized speech representations from the audio features by utilizing an effective attention scheme.
+
+3.2.2.Editing Module.
+To compensate the information loss and fusion audio features with image features, we design an editing module. As shown in Figure 3, the global audio vectors 
+𝑓
+𝑎
+(
+1
+:
+𝑖
+)
+ are sent into editing module along with the disentangled emotion embedding 
+𝑓
+𝐸
+𝑖
+. Then at different levels of the network, we introduce random noise and inject the facial features codes 
+𝑓
+𝑅
+(
+1
+:
+𝑖
+)
+′
+ by AdaIN blocks (Suvorov et al., 2022) which normalize visual features channel-wise after each fully connected block. So the multimodal latent output 
+𝑓
+𝑆
+(
+1
+:
+𝑖
+)
+′
+ from editing module can help capture subtle image details at different resolutions (Karras et al., 2020) and further generate realistic speech-driven talking head with diverse styles.
+
+3.2.3.Talking Head Generator.
+The facial information of emotion and pose, and speaking content of audio clip have already been edited in the latent space. Since IRFD capture the head pose and emotion without global audio features while audio-driven talking head generation, we use two individual generators for better interpretation of the edited latent codes, i.e., the IRFD generator 
+𝐺
+𝑑
+ and global generator 
+𝐺
+𝑔
+. For our generating network, we novelty modify the head generator based on styleGAN (Karras et al., 2020) for the two different generation scenarios. As shown in Figure 3, we feed the edited talking head latent codes into the generator to generate a talking head with synchronized lips, emotions, and poses. Specially, at convolutional block, we add multi-layer perceptron (mlp) results of 
+𝑓
+𝑅
+(
+1
+:
+𝑖
+)
+′
+ to map the facial information. So the global generator can be defined as:
+
+(9)		
+ℐ
+𝑔
+𝑖
+=
+𝐺
+𝑔
+​
+(
+𝑚
+​
+𝑙
+​
+𝑝
+​
+(
+𝑓
+𝐼
+𝑖
+,
+𝑓
+𝑃
+𝑖
+)
+,
+ℱ
+)
+,
+where 
+ℱ
+=
+𝑓
+𝑆
+(
+1
+:
+𝑖
+)
+′
+ and 
+ℐ
+𝑔
+𝑖
+ is the output image of the Audio-driven Talking Head Generator. While pre-training the disentanglement module, the IRFD generator is 
+ℐ
+𝑑
+𝑖
+=
+𝐺
+𝑑
+​
+(
+𝑚
+​
+𝑙
+​
+𝑝
+​
+(
+𝑓
+𝐼
+𝑖
+,
+𝑓
+𝑃
+𝑖
+,
+𝑓
+𝐸
+𝑖
+)
+)
+.
+
+3.3.Network Training
+The following is the training procedure. We choose a identity frame 
+𝐼
+ in the beginning and extract its identity embedding. The input video 
+𝑅
+(
+1
+:
+𝑀
+)
+ is used to extract the emotion and pose embedding. 
+𝐸
+𝑎
+ converts the appropriate audio clip to an audio waveform and extracts its speech embedding. The speech embedding is then combined with image embeddings (identity, emotion, pose) by editing module. Finally, this edited latent codes are fed into generator 
+𝐺
+𝑔
+. The reconstructed video is 
+ℐ
+𝑑
+(
+1
+:
+𝑀
+)
+. A multiscale discriminator D is applied to the generated video frame and original video frame to evaluate whether the video frames are fake or real. Therefore, we constrain this by introducing the single-image adversarial loss 
+ℒ
+𝐺
+​
+𝐴
+​
+𝑁
+ reported in (Song et al., 2022):
+
+(10)		
+ℒ
+𝐺
+​
+𝐴
+​
+𝑁
+=
+𝑚
+​
+𝑖
+​
+𝑛
+𝐺
+𝑚
+​
+𝑎
+​
+𝑥
+𝐷
+𝐸
+(
+𝑥
+,
+𝑦
+)
+​
+[
+𝑙
+​
+𝑜
+​
+𝑔
+​
+𝐷
+​
+(
+𝑥
+,
+𝑦
+)
+]
++
+𝐸
+𝑥
+​
+[
+𝑙
+​
+𝑜
+​
+𝑔
+​
+(
+1
+−
+𝐷
+​
+(
+𝑥
+,
+𝐺
+​
+(
+𝑥
+)
+)
+)
+]
+,
+where 
+𝑥
+ is the input identity frame
+𝐼
+ and 
+𝑦
+ is the original video frame of video 
+𝑅
+(
+1
+:
+𝑀
+)
+.
+
+To achieve a more realistic talking head, we use contrastive loss (Chung and Zisserman, 2017b) to enhance the synchronization of audio and visual elements. We propose, based on recent research (Eskimez et al., 2020), to adopt and train a modified version of SyncNet (Chung and Zisserman, 2017b):
+
+(11)		
+ℒ
+𝑠
+​
+𝑦
+​
+𝑛
+​
+𝑐
+=
+1
+2
+​
+𝑁
+​
+∑
+𝑛
+=
+1
+𝑁
+(
+𝑦
+𝑛
+)
+​
+𝑑
+𝑛
+2
++
+(
+1
+−
+𝑦
+𝑛
+)
+​
+𝑚
+​
+𝑎
+​
+𝑥
+​
+(
+𝑚
+​
+𝑎
+​
+𝑟
+​
+𝑔
+​
+𝑖
+​
+𝑛
+−
+𝑑
+𝑛
+,
+0
+)
+2
+,
+𝑦
+∈
+[
+0
+,
+1
+]
+,
+where 
+𝑦
+ is the binary similarity metric between the audio 
+𝑎
+(
+1
+:
+𝑀
+)
+ and the video inputs 
+𝑅
+(
+1
+:
+𝑀
+)
+. 
+𝑑
+ is the 
+𝐿
+​
+2
+ distance between the audio and video embedding:
+
+(12)		
+𝑑
+=
+‖
+𝑆
+​
+𝑦
+​
+𝑛
+​
+𝑐
+​
+𝑛
+​
+𝑒
+​
+𝑡
+𝑓
+​
+𝑐
+​
+7
+​
+(
+𝑅
+𝑖
+)
+−
+𝑆
+​
+𝑦
+​
+𝑛
+​
+𝑐
+​
+𝑛
+​
+𝑒
+​
+𝑡
+𝑓
+​
+𝑐
+​
+7
+​
+(
+ℐ
+𝑔
+𝑖
+)
+‖
+2
+,
+Then, by combining the perceptual reconstruction loss 
+ℒ
+𝑣
+​
+𝑔
+​
+𝑔
+ (Isola et al., 2017), which is calculated by comparing pre-trained VGGNet(Kollias et al., 2019) features from different layers of the network, the final loss function for the generator is:
+
+(13)		
+ℒ
+=
+ℒ
+𝐺
+​
+𝐴
+​
+𝑁
++
+ℒ
+𝑠
+​
+𝑦
+​
+𝑛
+​
+𝑐
++
+ℒ
+𝑣
+​
+𝑔
+​
+𝑔
+.
+Refer to caption
+Figure 4.Qualitative comparisons with the other SOTA methods. The top two rows show the Identity, Reference Source (video frames after the fusion of emotion and pose) and Audio, respectively. The mouth shape of the ground-truth result generated by combining Audio and Reference Source, as shown in Mouth GT. Since this is the first method to generate videos using four types of input data, there’s no prior ground-truth with all four inputs. Therefore, for qualitative comparison, we compare the results with Mouth GT.
+Table 1.Quantitative results on MEAD dataset  (Wang et al., 2020) and HDTF dataset  (Zhang et al., 2021a).
+Method / Score	MEAD	HDTF
+SSIM
+↑
+ 	PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+SSIM
+↑
+PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+ATVG	0.73	29.33	3.36	5.82	3.81	0.67	28.13	3.22	4.16	3.93
+EAMM	0.44	28.54	5.78	5.83	1.54	0.36	27.66	6.04	5.92	1.72
+PC-AVS	0.61	29.07	5.36	4.41	3.37	0.53	27.94	5.52	4.67	3.22
+Wav2Lip	0.69	29.01	3.57	3.36	5.83	0.48	27.98	4.77	4.24	3.76
+Ground Truth	1	-	0	0	5.41	1	-	0	0	5.23
+Ours	0.81	29.31	2.48	3.25	3.99	0.83	29.46	2.32	3.02	3.96
+4.Experiment
+4.1.Dataset
+We use Voxceleb (Nagrani et al., 2017), MEAD (Wang et al., 2020), CREMA-D (Cao et al., 2014) and HDTF (Zhang et al., 2021a) datasets on our experiments. Voxceleb contains real world videos with large variation in face pose and occlusion of faces and audio. MEAD is a high-quality emotional audiovisual dataset that includes 60 actors/actresses and eight emotion categories. CREMA-D is a dataset with over 7,000 emotion category audios. HDTF is a high-resolution in-the-wild audio-visual dataset. Following (Siarohin et al., 2019), we crop faces from the videos and resize them to 
+256
+×
+256
+. Faces move freely within a fixed bounding box and no need to align. The videos are sampled at the rate of 30 FPS and the audios are pre-processed to 16kHz. We train our IRFD on the Voxceleb and MEAD datasets with pose, emotion and identity. We train our SPEAK model on the Voxceleb and MEAD datasets. For evaluation, the test set contains videos from the MEDA, CREMA-D and HDTF dataset, which are invisible during training.
+
+4.2.Implementation Details
+We employ Adam optimizer for training. The 
+𝐸
+𝑖
+, 
+𝐸
+𝑒
+ and 
+𝐸
+𝑝
+ structure is a ResNet50 (He et al., 2016) are trained for 6 hours on eight-16GB NVIDIA Tesla V100 GPUs with a learning rate of 0.0001. Before training the SPEAK, the IRFD is trained on the Voxceleb dataset and MEAD dataset with 
+ℒ
+𝑑
+​
+𝑖
+​
+𝑠
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑎
+​
+𝑛
+​
+𝑔
+​
+𝑙
+​
+𝑒
+​
+𝑚
+​
+𝑒
+​
+𝑛
+​
+𝑡
+. Then the generator 
+𝐺
+𝑑
+ in IRFD is discarded, while three encoders are used in the global generator 
+𝐺
+𝑔
+ training process. Our work is trained for 20 hours on eight-16GB NVIDIA Tesla V100 GPUs with a learning rate of 0.0001.
+
+4.3.Evaluation
+4.3.1.Evaluation Metrics.
+We use peak signal-to-noise ratio (PSNR) and structural similarity (SSIM) (Wang et al., 2004) to compare the image quality of the generated video frames to the original video frames. To account for the accuracy of mouth forms and lip sync, we employ both the landmark distance (LMD) surrounding the mouths (M-LMD) (Chen et al., 2019) and the confidence score (Syncconf) (Chung and Zisserman, 2017b) to measure audiovisual synchronization. Then we use the LDM on the whole face (F-LMD) to measure the accuracy of facial emotions and pose.
+
+4.3.2.Comparing Methods.
+We compared our SPEAK to those of other SOTA methods: Wav2Lip (Prajwal et al., 2020), ATVG (Chen et al., 2019), PC-AVS (Zhou et al., 2021) and EAMM (Ji et al., 2022). In our experiments, we evaluate our method in a self-driven setting on a separate test set that includes identities, emotions and poses that were not encountered during training. Notably, due to its focus on mouth area movements, Wav2Lip samples had fixed head poses. Conversely, we derived poses from videos when evaluating other methods. This methodology ensured consistency in our evaluations and allowed us to make meaningful comparisons between the different approaches. All methods are compared under the five metrics mentioned above. For M-LMD/F-LMD the lower the better, and the higher the better for other metrics.
+
+Table 2.User studies on the MEAD dataset  (Wang et al., 2020) and CREMA-D dataset  (Cao et al., 2014) are measured using mean scores.
+Method/Score	MEAD	CREMA-D
+Degree of Lip-Sync 
+↑
+ 	Head Naturalness 
+↑
+Video Realness 
+↑
+Degree of Lip-Sync 
+↑
+Head Naturalness 
+↑
+Video Realness 
+↑
+ATVG	3.89	3.71	3.82	4.23	3.54	3.85
+EAMM	3.92	1.63	1.86	3.97	1.56	1.86
+PC-AVS	3.41	1.87	2.33	3.42	1.86	2.45
+Wav2Lip	4.03	1.42	1.54	4.21	1.31	1.58
+Ground Truth	4.76	4.91	4.89	4.88	4.89	4.96
+Ours	4.12	3.97	4.09	4.23	3.67	4.11
+4.4.Experiment Results
+4.4.1.Quantitative Comparisons.
+The results of the quantitative evaluation are reported in Table 1. Our method achieves the best performance among most metrics on MEAD and HDTF datasets. Since Wav2Lip merely generated lip-sync and does not change other parts of the reference images, it obtains the highest Syncconf on MEAD. The obtained score is even higher than that of the ground truth (original video frame). This can be attributed to the fact that Wav2Lip is trained with SyncNet as a discriminator, making it reasonable for Wav2Lip to achieve the highest confidence score of SyncNet on MEAD. Our confidence score of SyncNet is closest to ground truth on MEAD and the highest on HDTF dataset. Besides, our method achieves the best performance under the F-LMD and M-LMD on HDTF dataset. These findings indicate the superior quality of our generated real face (as measured by PSNR and SSIM) as well as a highly accurate lip synthesis (as measured by M-LMD, Syncconf) and facial emotions and pose (as measured by F-LMD).
+
+4.4.2.Qualitative Comparisons.
+As shown in Figure 4, we make comparisions with other methods on various frames. The Identity, Reference Source (video frames after the fusion of emotion and pose) and Audio are all invisible during training. It is evident that our SPEAK can achieve high-fidelity emotions and posture styles matching the Reference Source, as well as more accurate lip shapes. In terms of lip-sync, Wav2lip and ATVG are competitive with our method. However, Wav2lip and ATVG do not consider emotions, so they generate seemingly reasonable lip movements but only with neutral emotions. EAMM and PC-AVS cannot achieve accurate lip-sync. In addition, the PC-AVS is not robust enough to data with background variations, leading the generated backgrounds are very different from the female identity (right side of Figure 4). Only EAMM and our method can achieve emotion and pose control. But EAMM can only control the emotions of the upper part of the face, while failing to control the mouth shape of expressions. Furthermore, EAMM connot preserve the speaking identity well. In contrast, our method can imitate emotional talking head from reference source driving video clips while achieving a accurate lip-sync, satisfactory identity preservation, and producing stable backgrounds.
+
+Table 3.Ablation study on quantitative comparison of IRFD on the MEAD dataset  (Wang et al., 2020) and HDTF dataset  (Zhang et al., 2021a).
+Method / Score	MEAD	HDTF
+SSIM
+↑
+ 	PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+SSIM
+↑
+PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+w/o 
+ℒ
+𝑖
+​
+𝑑
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑖
+​
+𝑡
+​
+𝑦
+ 	0.63	25.23	4.26	3.29	3.06	0.66	25.47	4.11	3.13	3.01
+w/o 
+ℒ
+𝑐
+​
+𝑙
+​
+𝑠
+ 	0.75	28.11	2.78	3.27	3.81	0.79	28.33	2.65	3.08	3.82
+w/o 
+ℒ
+𝑝
+​
+𝑜
+​
+𝑠
+​
+𝑒
+ 	0.65	25.89	3.39	3.51	3.72	0.67	26.12	3.26	3.27	3.68
+w/o 
+ℒ
+𝑒
+​
+𝑚
+​
+𝑜
+​
+𝑡
+​
+𝑖
+​
+𝑜
+​
+𝑛
+ 	0.69	26.74	3.21	3.14	3.29	0.71	26.84	3.12	3.02	3.29
+w/o 
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+ 	0.58	25.45	3.87	3.66	3.12	0.61	25.79	3.79	3.54	3.07
+Ours (Full Model)	0.81	29.31	2.48	3.25	3.99	0.83	29.46	2.32	3.02	3.96
+Table 4.Ablation study on quantitative comparison of SPEAK on the MEAD dataset  (Wang et al., 2020) and HDTF dataset  (Zhang et al., 2021a).
+Method / Score	MEAD	HDTF
+SSIM
+↑
+ 	PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+SSIM
+↑
+PSNR
+↑
+F-LMD
+↓
+M-LMD
+↓
+Syncconf
+↑
+w/o IRFD	0.55	24.77	5.25	3.88	2.96	0.58	24.89	5.17	3.71	2.92
+w/o 
+ℒ
+𝐺
+​
+𝐴
+​
+𝑁
+ 	0.61	26.69	4.12	3.81	3.14	0.62	26.88	3.99	3.67	3.02
+w/o 
+ℒ
+𝑣
+​
+𝑔
+​
+𝑔
+ 	0.72	27.01	3.37	3.76	3.67	0.75	27.13	3.21	3.64	3.61
+w/o 
+ℒ
+𝑠
+​
+𝑦
+​
+𝑛
+​
+𝑐
+ 	0.72	28.41	2.64	4.14	3.16	0.76	28.57	2.52	3.98	3.15
+Ours (Full Model)	0.81	29.31	2.48	3.25	3.99	0.83	29.46	2.32	3.02	3.96
+Refer to caption
+Figure 5.Visualized results of IRFD effectiveness.
+4.4.3.User Studies.
+We conduct a user studies with 20 participants to gather their feedback on 30 videos generated by SPEAK and the other SOTA methods based on the MEAD dataset and the CREMA-D dataset. Users are asked to score each video on a scale of 1 to 5 based on the (1) degree of lip-sync, (2)naturalness of head motions, and (3) video realness. A score of 1-2 indicates that the generated video has a significant difference from the mouth GT and is of poor quality. A score of 3 indicates that the quality is mediocre, neither good nor bad. A score of 4-5 indicates that the generated video has good lip-sync, natural head motions, and realness. The higher the score, the better the performance. We processed the collected feedback scores by taking the mean value. As shown in Table 2, users give the highest marks on each aspect of our method on both two datasets. ATVG is highly competitive in terms of degree of Lip-Sync and naturalness of head motions, but its video realness is not perfect and is not as robust as our method on different datasets. While the naturalness of head motions in the other three methods is quite poor.
+
+4.4.4. The Effectiveness of Disentanglement Module
+We firstly use pre-trained IRFD to reconstruct real facial images by Gd without swapping operations as original comparison objects.Then we independently swap the latent codes of three facial features and reconstruct them into fake facial images. As visualized results shown in Figure 5, it can be intuitively seen that our proposed IRFD is effective in decoupling facial features, which is similar to the mapping network in styleGAN. And more quantitative comparisons results are discussed in the ablation study of Sec.4.4.5.
+
+4.4.5.Ablation study.
+We compare the emotional latent space obtained with and without IRFD training of the network on the MEAD dataset and the HDTF dataset to evaluate the performance of the disentanglement module. Additionally, we conduct ablation experiments on the overall SPEAK model. Table 3 demonstrates that overall, the full model exhibits significant advantages across all performance metrics, whether on the MEAD dataset or the HDTF dataset. When 
+ℒ
+𝑖
+​
+𝑑
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑖
+​
+𝑡
+​
+𝑦
+ is removed, F-LMD and Syncconf metrics show the worst performance, indicating that 
+ℒ
+𝑖
+​
+𝑑
+​
+𝑒
+​
+𝑛
+​
+𝑡
+​
+𝑖
+​
+𝑡
+​
+𝑦
+ effectively aligns facial features and plays a crucial role in synchronizing lip movements with audio signals. 
+ℒ
+𝑐
+​
+𝑙
+​
+𝑠
+, 
+ℒ
+𝑝
+​
+𝑜
+​
+𝑠
+​
+𝑒
+, and 
+ℒ
+𝑒
+​
+𝑚
+​
+𝑜
+​
+𝑡
+​
+𝑖
+​
+𝑜
+​
+𝑛
+ have certain impacts on facial emotion and movements. However, the removal of 
+ℒ
+𝑠
+​
+𝑒
+​
+𝑙
+​
+𝑓
+ significantly affects the similarity of generated images. Table 4 shows that the IRFD module contributes to the decoupling of information from images. When the IRFD module is removed from the full model, the quantitative findings are less accurate. This implies that the IRFD module contribute to the SPEAK. We also calculated the quantitative outcomes to assess the effectiveness of the losses introduced Sec.3.3. Each loss, as shown in Table 4, contributes to the component. When 
+ℒ
+𝑠
+​
+𝑦
+​
+𝑛
+​
+𝑐
+ is removed, the results in M-LMD/F-LMD, SSIM, and PSNR are worse than the our method, indicating the necessity of 
+ℒ
+𝑠
+​
+𝑦
+​
+𝑛
+​
+𝑐
+ in generating more accurate lip movements. We present the visual improvement of the refinement in Figure 6. The performance of our method exhibits satisfactory identity preservation, rich emotions, precise lip-sync, and posture. While the performance after removing 
+ℒ
+𝑣
+​
+𝑔
+​
+𝑔
+ is also quite competitive, our method imitates the eye angle in the pose source more accurately.
+
+Refer to caption
+Figure 6.Visualized results of SPEAK ablation study.
+5.Conclusion
+In this paper, we propose a technique for generating accurately lip-synched emotional talking head with free pose and emotion control from other videos. We design a novel disentanglement module IRFD for decomposing the input sample into emotion, identity, and pose embedding. Then, to generate the talking head, we offer a novel talking head generation framework SPEAK. Qualitative and quantitative experiments indicate that our method performs very robustly in challenging scenarios, such as significant pose and emotional expression variations.
+
+References
+(1)
+Baevski et al. (2020)Alexei Baevski, Yuhao Zhou, Abdelrahman Mohamed, and Michael Auli. 2020.wav2vec 2.0: A framework for self-supervised learning of speech representations.Advances in neural information processing systems 33 (2020), 12449–12460.
+Bregler et al. (1997)Christoph Bregler, Michele Covell, and Malcolm Slaney. 1997.Video rewrite: Driving visual speech with audio. In Proceedings of the 24th annual conference on Computer graphics and interactive techniques. 353–360.
+Cao et al. (2014)Houwei Cao, David G Cooper, Michael K Keutmann, Ruben C Gur, Ani Nenkova, and Ragini Verma. 2014.Crema-d: Crowd-sourced emotional multimodal actors dataset.IEEE transactions on affective computing 5, 4 (2014), 377–390.
+Chen et al. (2020)Lele Chen, Guofeng Cui, Celong Liu, Zhong Li, Ziyi Kou, Yi Xu, and Chenliang Xu. 2020.Talking-head generation with rhythmic head motion. In Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August 23–28, 2020, Proceedings, Part IX. Springer, 35–51.
+Chen et al. (2019)Lele Chen, Ross K Maddox, Zhiyao Duan, and Chenliang Xu. 2019.Hierarchical cross-modal talking face generation with dynamic pixel-wise loss. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. 7832–7841.
+Chung et al. (2017)Joon Son Chung, Amir Jamaludin, and Andrew Zisserman. 2017.You said that?arXiv preprint arXiv:1705.02966 (2017).
+Chung and Zisserman (2017a)Joon Son Chung and Andrew Zisserman. 2017a.Lip reading in the wild. In Computer Vision–ACCV 2016: 13th Asian Conference on Computer Vision, Taipei, Taiwan, November 20-24, 2016, Revised Selected Papers, Part II 13. Springer, 87–103.
+Chung and Zisserman (2017b)Joon Son Chung and Andrew Zisserman. 2017b.Out of time: automated lip sync in the wild. In Computer Vision–ACCV 2016 Workshops: ACCV 2016 International Workshops, Taipei, Taiwan, November 20-24, 2016, Revised Selected Papers, Part II 13. Springer, 251–263.
+Cosatto and Graf (2000)Eric Cosatto and Hans Peter Graf. 2000.Photo-realistic talking-heads from image samples.IEEE Transactions on multimedia 2, 3 (2000), 152–163.
+Edwards et al. (2016)Pif Edwards, Chris Landreth, Eugene Fiume, and Karan Singh. 2016.Jali: an animator-centric viseme model for expressive lip synchronization.ACM Transactions on graphics (TOG) 35, 4 (2016), 1–11.
+Eskimez et al. (2020)Sefik Emre Eskimez, Ross K Maddox, Chenliang Xu, and Zhiyao Duan. 2020.End-to-end generation of talking faces from noisy speech. In ICASSP 2020-2020 IEEE international conference on acoustics, speech and signal processing (ICASSP). IEEE, 1948–1952.
+Eskimez et al. (2021)Sefik Emre Eskimez, You Zhang, and Zhiyao Duan. 2021.Speech driven talking face generation from a single image and an emotion condition.IEEE Transactions on Multimedia 24 (2021), 3480–3490.
+Fan et al. (2015)Bo Fan, Lijuan Wang, Frank K Soong, and Lei Xie. 2015.Photo-real talking head with deep bidirectional LSTM. In 2015 IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP). IEEE, 4884–4888.
+Fan et al. (2022)Yingruo Fan, Zhaojiang Lin, Jun Saito, Wenping Wang, and Taku Komura. 2022.Faceformer: Speech-driven 3d facial animation with transformers. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. 18770–18780.
+He et al. (2016)Kaiming He, Xiangyu Zhang, Shaoqing Ren, and Jian Sun. 2016.Deep residual learning for image recognition. In Proceedings of the IEEE conference on computer vision and pattern recognition. 770–778.
+Isola et al. (2017)Phillip Isola, Jun-Yan Zhu, Tinghui Zhou, and Alexei A Efros. 2017.Image-to-image translation with conditional adversarial networks. In Proceedings of the IEEE conference on computer vision and pattern recognition. 1125–1134.
+Ji et al. (2022)Xinya Ji, Hang Zhou, Kaisiyuan Wang, Qianyi Wu, Wayne Wu, Feng Xu, and Xun Cao. 2022.Eamm: One-shot emotional talking face via audio-based emotion-aware motion model. In ACM SIGGRAPH 2022 Conference Proceedings. 1–10.
+Karras et al. (2020)Tero Karras, Samuli Laine, Miika Aittala, Janne Hellsten, Jaakko Lehtinen, and Timo Aila. 2020.Analyzing and improving the image quality of stylegan. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. 8110–8119.
+Kim et al. (2019)Hyeongwoo Kim, Mohamed Elgharib, Michael Zollhöfer, Hans-Peter Seidel, Thabo Beeler, Christian Richardt, and Christian Theobalt. 2019.Neural style-preserving visual dubbing.ACM Transactions on Graphics (TOG) 38, 6 (2019), 1–13.
+Kim et al. (2018)Hyeongwoo Kim, Pablo Garrido, Ayush Tewari, Weipeng Xu, Justus Thies, Matthias Niessner, Patrick Pérez, Christian Richardt, Michael Zollhöfer, and Christian Theobalt. 2018.Deep video portraits.ACM Transactions on Graphics (TOG) 37, 4 (2018), 1–14.
+Kollias et al. (2019)Dimitrios Kollias, Panagiotis Tzirakis, Mihalis A Nicolaou, Athanasios Papaioannou, Guoying Zhao, Björn Schuller, Irene Kotsia, and Stefanos Zafeiriou. 2019.Deep affect prediction in-the-wild: Aff-wild database and challenge, deep architectures, and beyond.International Journal of Computer Vision 127, 6-7 (2019), 907–929.
+Lin et al. (2022)Nankai Lin, Sihui Fu, Xiaotian Lin, and Lianxi Wang. 2022.Multi-label emotion classification based on adversarial multi-task learning.Information Processing & Management 59, 6 (2022), 103097.
+Liu et al. (2015)Yilong Liu, Feng Xu, Jinxiang Chai, Xin Tong, Lijuan Wang, and Qiang Huo. 2015.Video-audio driven real-time facial animation.ACM Transactions on Graphics (TOG) 34, 6 (2015), 1–10.
+Ma et al. (2023)Yifeng Ma, Suzhen Wang, Zhipeng Hu, Changjie Fan, Tangjie Lv, Yu Ding, Zhidong Deng, and Xin Yu. 2023.Styletalk: One-shot talking head generation with controllable speaking styles.arXiv preprint arXiv:2301.01081 (2023).
+Nagrani et al. (2017)Arsha Nagrani, Joon Son Chung, and Andrew Zisserman. 2017.Voxceleb: a large-scale speaker identification dataset.arXiv preprint arXiv:1706.08612 (2017).
+Prajwal et al. (2020)KR Prajwal, Rudrabha Mukhopadhyay, Vinay P Namboodiri, and CV Jawahar. 2020.A lip sync expert is all you need for speech to lip generation in the wild. In Proceedings of the 28th ACM International Conference on Multimedia. 484–492.
+Pumarola et al. ([n. d.])A Pumarola, A Agudo, AM Martinez, A Sanfeliu, and F Ganimation Moreno-Noguer. [n. d.].Anatomically-aware facial animation from a single image. In Proceedings of the European Conference on Computer Vision (ECCV). 818–833.
+Siarohin et al. (2019)Aliaksandr Siarohin, Stéphane Lathuilière, Sergey Tulyakov, Elisa Ricci, and Nicu Sebe. 2019.First order motion model for image animation.Advances in Neural Information Processing Systems 32 (2019).
+Song et al. (2022)Linsen Song, Wayne Wu, Chen Qian, Ran He, and Chen Change Loy. 2022.Everybody’s talkin’: Let me talk as you want.IEEE Transactions on Information Forensics and Security 17 (2022), 585–598.
+Suvorov et al. (2022)Roman Suvorov, Elizaveta Logacheva, Anton Mashikhin, Anastasia Remizova, Arsenii Ashukha, Aleksei Silvestrov, Naejin Kong, Harshith Goka, Kiwoong Park, and Victor Lempitsky. 2022.Resolution-robust large mask inpainting with fourier convolutions. In Proceedings of the IEEE/CVF winter conference on applications of computer vision. 2149–2159.
+Suwajanakorn et al. (2017)Supasorn Suwajanakorn, Steven M Seitz, and Ira Kemelmacher-Shlizerman. 2017.Synthesizing obama: learning lip sync from audio.ACM Transactions on Graphics (ToG) 36, 4 (2017), 1–13.
+Thies et al. (2020)Justus Thies, Mohamed Elgharib, Ayush Tewari, Christian Theobalt, and Matthias Nießner. 2020.Neural voice puppetry: Audio-driven facial reenactment. In Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August 23–28, 2020, Proceedings, Part XVI 16. Springer, 716–731.
+Thies et al. (2016)Justus Thies, Michael Zollhofer, Marc Stamminger, Christian Theobalt, and Matthias Nießner. 2016.Face2face: Real-time face capture and reenactment of rgb videos. In Proceedings of the IEEE conference on computer vision and pattern recognition. 2387–2395.
+Wang et al. (2020)Kaisiyuan Wang, Qianyi Wu, Linsen Song, Zhuoqian Yang, Wayne Wu, Chen Qian, Ran He, Yu Qiao, and Chen Change Loy. 2020.Mead: A large-scale audio-visual dataset for emotional talking-face generation. In Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August 23–28, 2020, Proceedings, Part XXI. Springer, 700–717.
+Wang et al. (2022)Suzhen Wang, Lincheng Li, Yu Ding, and Xin Yu. 2022.One-shot talking face generation from single-speaker audio-visual correlation learning. In Proceedings of the AAAI Conference on Artificial Intelligence, Vol. 36. 2531–2539.
+Wang et al. (2004)Zhou Wang, Alan C Bovik, Hamid R Sheikh, and Eero P Simoncelli. 2004.Image quality assessment: from error visibility to structural similarity.IEEE transactions on image processing 13, 4 (2004), 600–612.
+Williams and Stevens (1972)Carl E Williams and Kenneth N Stevens. 1972.Emotions and speech: Some acoustical correlates.The journal of the acoustical society of America 52, 4B (1972), 1238–1250.
+Zakharov et al. (2019)Egor Zakharov, Aliaksandra Shysheya, Egor Burkov, and Victor Lempitsky. 2019.Few-shot adversarial learning of realistic neural talking head models. In Proceedings of the IEEE/CVF international conference on computer vision. 9459–9468.
+Zhang et al. (2021b)Chenxu Zhang, Yifan Zhao, Yifei Huang, Ming Zeng, Saifeng Ni, Madhukar Budagavi, and Xiaohu Guo. 2021b.Facial: Synthesizing dynamic talking face with implicit attribute learning. In Proceedings of the IEEE/CVF international conference on computer vision. 3867–3876.
+Zhang et al. (2019)Yunxuan Zhang, Siwei Zhang, Yue He, Cheng Li, Chen Change Loy, and Ziwei Liu. 2019.One-shot face reenactment.arXiv preprint arXiv:1908.03251 (2019).
+Zhang et al. (2021a)Zhimeng Zhang, Lincheng Li, Yu Ding, and Changjie Fan. 2021a.Flow-guided one-shot talking face generation with a high-resolution audio-visual dataset. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition. 3661–3670.
+Zhou et al. (2019)Hang Zhou, Yu Liu, Ziwei Liu, Ping Luo, and Xiaogang Wang. 2019.Talking face generation by adversarially disentangled audio-visual representation. In Proceedings of the AAAI conference on artificial intelligence, Vol. 33. 9299–9306.
+Zhou et al. (2021)Hang Zhou, Yasheng Sun, Wayne Wu, Chen Change Loy, Xiaogang Wang, and Ziwei Liu. 2021.Pose-controllable talking face generation by implicitly modularized audio-visual representation. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition. 4176–4186.
+◄ ar5iv homepage Feeling
+lucky? Conversion
+report Report
+an issue View original
+on arXiv►
+Copyright Privacy Policy Generated on Wed Jun 5 18:33:43 2024 by LaTeXMLMascot Sammy
