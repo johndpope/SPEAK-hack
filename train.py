@@ -122,7 +122,7 @@ def train_loop(config, model, dataloader, optimizer):
         progress_bar.set_description(f"Epoch {epoch}")
 
         for step, batch in enumerate(dataloader):
-            images = batch["pixel_values"].to(accelerator.device)
+            images = batch["img_pairs"].to(accelerator.device)
             x_s, x_t = images[:, 0], images[:, 1]  # Assuming the batch contains pairs of images
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
@@ -177,8 +177,12 @@ def main():
     ])
     
     def transform(examples):
-        images = [preprocess(image.convert("RGB")) for image in examples["image"]]
-        return {"pixel_values": images}
+        image_pairs = []
+        for i in range(0, len(examples["image"]), 2):
+            source_image = preprocess(examples["image"][i].convert("RGB"))
+            target_image = preprocess(examples["image"][i + 1].convert("RGB"))
+            image_pairs.append((source_image, target_image))
+        return {"img_pairs": torch.stack(image_pairs)}
 
     dataset.set_transform(transform)
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
