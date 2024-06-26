@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 import os
 from omegaconf import OmegaConf
 from datasets import load_dataset
+from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
 class IRFD(nn.Module):
     def __init__(self):
@@ -22,8 +23,11 @@ class IRFD(nn.Module):
         # Generator
         self.Gd = self._create_generator()
         
-        # Emotion classifier
-        self.Cm = nn.Linear(2048, 8)  # Assuming 8 emotion categories
+        # Initialize the Emotion Recognizer
+        model_name = 'enet_b0_8_va_mtl'  # Adjust as needed depending on the model availability
+        self.fer = HSEmotionRecognizer(model_name=model_name)
+        self.emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
+                                     5: 'neutral', 6: 'sad', 7: 'surprise'}
         
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
@@ -118,12 +122,20 @@ def train_loop(config, model, dataloader, optimizer):
 
         for step, batch in enumerate(dataloader):
             images = batch["pixel_values"].to(accelerator.device)
-            x_s, x_t, emotion_labels = batch
-            x_s, x_t, emotion_labels = x_s.to(accelerator.device), x_t.to(accelerator.device), emotion_labels.to(accelerator.device)
+            x_s, x_t = images[0], images[1]
 
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
-                loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels)
+                
+                # Get emotion labels using HSEmotionRecognizer
+                emotion_labels_s = model.fer.predict_emotions(x_s.cpu().numpy())
+                emotion_labels_t = model.fer.predict_emotions(x_t.cpu().numpy())
+                
+                # Convert emotion labels to indices
+                emotion_labels_s = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
+                emotion_labels_t = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_t], dtype=torch.long)
+                
+                loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t)
 
                 accelerator.backward(loss)
                 optimizer.step()
