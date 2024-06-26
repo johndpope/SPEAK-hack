@@ -122,8 +122,11 @@ def train_loop(config, model, dataloader, optimizer):
 
         for step, batch in enumerate(dataloader):
             images = batch["pixel_values"].to(accelerator.device)
-            x_s, x_t = images[0], images[1]
+            x_s, x_t = images[:, 0], images[:, 1]  # Assuming the batch contains pairs of images
 
+            # Reshape the input tensors to have 4 dimensions
+            x_s = x_s.unsqueeze(1)
+            x_t = x_t.unsqueeze(1)
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
                 

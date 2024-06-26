@@ -17,7 +17,7 @@ model:
 training:
   output_dir: "./speak"
   num_epochs: 100
-  train_batch_size: 16
+  train_batch_size: 2
   eval_batch_size: 16
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
