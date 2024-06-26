@@ -125,10 +125,12 @@ def train_loop(config, model, dataloader, optimizer):
             x_s = batch["source_image"].to(accelerator.device)
             x_t = batch["target_image"].to(accelerator.device)
             
+            x_s.unsqueeze(1)
+            x_t.unsqueeze(1)
+            
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
             
-
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
                 
