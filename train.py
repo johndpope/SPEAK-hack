@@ -8,7 +8,7 @@ from accelerate import Accelerator
 from tqdm.auto import tqdm
 import os
 from omegaconf import OmegaConf
-
+from datasets import load_dataset
 
 class IRFD(nn.Module):
     def __init__(self):
@@ -152,7 +152,19 @@ def main():
 
     model = IRFD()
 
-    dataset = config.dataset.name  # Load and preprocess your dataset
+    dataset = load_dataset(config.dataset.name, split=config.dataset.split)
+    preprocess = transforms.Compose([
+        transforms.Resize((config.model.sample_size, config.model.sample_size)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
+    
+    def transform(examples):
+        images = [preprocess(image.convert("RGB")) for image in examples["image"]]
+        return {"pixel_values": images}
+
+    dataset.set_transform(transform)
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
 
     optimizer = optim.Adam(model.parameters(), lr=config.optimization.learning_rate)
