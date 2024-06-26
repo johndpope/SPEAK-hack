@@ -183,7 +183,7 @@ def main():
             source_image = preprocess(examples["image"][i].convert("RGB"))
             target_image = preprocess(examples["image"][i + 1].convert("RGB"))
 
-        return {"source":source_image,"target_image":target_image}
+        return {"source_image":source_image,"target_image":target_image}
 
     dataset.set_transform(transform)
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
