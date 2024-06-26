@@ -1,0 +1,62 @@
+# Model configuration
+model:
+  sample_size: 64
+  in_channels: 3
+  out_channels: 3
+  center_input_sample: false
+  time_embedding_type: "positional"
+  model_channels: 192
+  channel_mult: [1, 2, 3, 4]
+  num_blocks: 3
+  attn_resolutions: [16, 8]
+  dropout: 0.1
+  label_balance: 0.5
+  concat_balance: 0.5
+
+# Training configuration
+training:
+  output_dir: "./speak"
+  num_epochs: 100
+  train_batch_size: 16
+  eval_batch_size: 16
+  gradient_accumulation_steps: 1
+  mixed_precision: "fp16"
+  save_steps: 500
+  eval_steps: 500
+  logging_steps: 100
+  P_mean: -0.4
+  P_std: 1.0
+  sigma_data: 0.5
+
+# Dataset configuration
+dataset:
+  name: "lansinuote/gen.1.celeba"
+  split: "train[:80%]"
+  image_size: 64
+
+# Optimization configuration
+optimization:
+  learning_rate: 1e-4
+  lr_warmup_steps: 500
+  num_train_timesteps: 1000
+  beta_start: 0.0001
+  beta_end: 0.02
+  beta_schedule: "linear"
+
+# Sampling configuration
+sampling:
+  num_inference_steps: 50
+  guidance_scale: 7.5
+
+# Logging and evaluation
+logging:
+  log_with: "tensorboard"
+  project_name: "speak_training"
+
+
+  # Sampler configuration
+sampler:
+  num_steps: 32
+  sigma_min: 0.002
+  sigma_max: 80
+  rho: 7
