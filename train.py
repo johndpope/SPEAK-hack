@@ -152,7 +152,7 @@ def main():
 
     model = IRFD()
 
-    dataset = ...  # Load and preprocess your dataset
+    dataset = config.dataset.name  # Load and preprocess your dataset
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
 
     optimizer = optim.Adam(model.parameters(), lr=config.optimization.learning_rate)
