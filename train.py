@@ -127,9 +127,7 @@ def train_loop(config, model, dataloader, optimizer):
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
             
-            # Reshape the input tensors to have 4 dimensions
-            x_s = x_s.unsqueeze(1)
-            x_t = x_t.unsqueeze(1)
+
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
                 
