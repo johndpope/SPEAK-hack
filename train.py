@@ -125,8 +125,8 @@ def train_loop(config, model, dataloader, optimizer):
             x_s = batch["source_image"].to(accelerator.device)
             x_t = batch["target_image"].to(accelerator.device)
             
-            x_s.unsqueeze(0)
-            x_t.unsqueeze(0)
+            x_s = x_s.unsqueeze(0)
+            x_t = x_t.unsqueeze(0)
             
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
