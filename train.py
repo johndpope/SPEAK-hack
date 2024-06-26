@@ -12,6 +12,7 @@ from datasets import load_dataset
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 import colored_traceback.auto
 
+IMAGE_SIZE = 512
 class IRFD(nn.Module):
     def __init__(self):
         super(IRFD, self).__init__()
@@ -36,10 +37,13 @@ class IRFD(nn.Module):
     
     def _create_generator(self):
         # Simplified generator structure
+        # Input: 2048 * 3 = 6144 features
+        # (2048 from each encoder: identity, emotion, and pose)
+        # Output: 1024 features
         return nn.Sequential(
             nn.Linear(2048 * 3, 1024),
             nn.ReLU(),
-            nn.Linear(1024, 256 * 256 * 3),
+            nn.Linear(1024, IMAGE_SIZE * IMAGE_SIZE * 3),
             nn.Tanh()
         )
     
