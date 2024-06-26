@@ -1,6 +1,6 @@
 # Model configuration
 model:
-  sample_size: 64
+  sample_size: 512
   in_channels: 3
   out_channels: 3
   center_input_sample: false
