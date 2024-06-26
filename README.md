@@ -10,6 +10,7 @@ https://arxiv.org/pdf/2405.07257
 
 
 
+
 **MEAD:** 
 A Large-scale Audio-visual Dataset for Emotional Talking-face Generation [ECCV2020]
 https://github.com/uniBruce/Mead
@@ -20,5 +21,8 @@ https://github.com/uniBruce/Mead
 Facial Extreme Emotions Dataset
 https://github.com/neeek2303/FEED
 
+
+
+Inter-Reconstructed Feature disentanglement(IRFD)
 
 ![screenshot](fig2.png)
