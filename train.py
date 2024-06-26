@@ -10,6 +10,7 @@ import os
 from omegaconf import OmegaConf
 from datasets import load_dataset
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
+import colored_traceback.auto
 
 class IRFD(nn.Module):
     def __init__(self):
