@@ -18,10 +18,14 @@ class IRFDGenerator512(nn.Module):
     def __init__(self, input_dim, ngf=64):
         super(IRFDGenerator512, self).__init__()
         
-        self.main = nn.Sequential(
+          self.main = nn.Sequential(
             # Input is the concatenated identity, emotion and pose embeddings
             # input_dim = 3 * 2048 = 6144 (assuming ResNet-50 encoders)
-            nn.ConvTranspose2d(input_dim, ngf * 32, 4, 1, 0, bias=False),
+            nn.ConvTranspose2d(input_dim, ngf * 64, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 64),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ngf * 64, ngf * 32, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf * 32),
             nn.ReLU(True),
             
