@@ -43,8 +43,6 @@ def train_loop(config, model, dataloader, optimizer):
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
         
-            # Get emotion labels using HSEmotionRecognizer
-            emotion_labels_s, scores = model.fer.predict_emotions(x_s.cpu().numpy(), logits=True)
             emotion_labels_t = model.fer.predict_emotions(x_t.cpu().numpy())
             print("emotion_labels_s:",emotion_labels_s)
             print("emotion_labels_t:",emotion_labels_t)
@@ -102,8 +100,11 @@ def main():
         for i in range(0, len(examples["image"]), 2):
             source_image = preprocess(examples["image"][i].convert("RGB"))
             target_image = preprocess(examples["image"][i + 1].convert("RGB"))
+            emotion_labels_s, _ = model.fer.predict_emotions(examples["image"][i].numpy(), logits=True)
+            emotion_labels_t, _ = model.fer.predict_emotions(examples["image"][i].numpy(), logits=True)
+          
 
-        return {"source_image":source_image,"target_image":target_image}
+        return {"source_image":source_image,"emotion_labels_s":emotion_labels_s,"target_image":target_image,"emotion_labels_t":emotion_labels_t}
 
     dataset.set_transform(transform)
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
