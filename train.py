@@ -38,15 +38,16 @@ def train_loop(config, model, dataloader, optimizer):
             x_s = batch["source_image"].to(accelerator.device)
             x_t = batch["target_image"].to(accelerator.device)
             
+            emotion_labels_s = batch["emotion_labels_s"]
+            emotion_labels_t = batch["emotion_labels_t"]
+
             x_s = x_s.unsqueeze(0)
             x_t = x_t.unsqueeze(0)
             
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
         
-            emotion_labels_t = model.fer.predict_emotions(x_t.cpu().numpy())
-            print("emotion_labels_s:",emotion_labels_s)
-            print("emotion_labels_t:",emotion_labels_t)
+         
         
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
@@ -55,9 +56,6 @@ def train_loop(config, model, dataloader, optimizer):
                 print("fe_s:",fe_s.shape)
                 print("fp_s:",fp_s.shape)
 
-                # Convert emotion labels to indices
-                emotion_labels_s = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
-                emotion_labels_t = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_t], dtype=torch.long)
                 
                 loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t)
 
@@ -98,7 +96,8 @@ def main():
     
 
     fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
-    
+    emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
+                                     5: 'neutral', 6: 'sad', 7: 'surprise'}
     def transform(examples):
         image_pairs = []
         for i in range(0, len(examples["image"]), 2):
@@ -111,6 +110,10 @@ def main():
             emotion_labels_s = model.fer.predict_emotions(source_image_np)
             emotion_labels_t = model.fer.predict_emotions(target_image_np)
 
+            # Convert emotion labels to indices
+            emotion_labels_s = torch.tensor([emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
+            emotion_labels_t = torch.tensor([emotion_idx_to_class[label] for label in emotion_labels_t], dtype=torch.long)
+                
         return {"source_image":source_image,"emotion_labels_s":emotion_labels_s,"target_image":target_image,"emotion_labels_t":emotion_labels_t}
 
     dataset.set_transform(transform)
