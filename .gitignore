@@ -3,3 +3,5 @@
 *.bin
 *.pkl
 *.pt
+__pycache__/model.cpython-311.pyc
+*.pyc

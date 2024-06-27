@@ -11,8 +11,39 @@ from omegaconf import OmegaConf
 from datasets import load_dataset
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 import colored_traceback.auto
+from transformers import Wav2Vec2Model
 
 IMAGE_SIZE = 512
+
+
+class IRFDGenerator(nn.Module):
+    def __init__(self, input_dim, ngf=64):
+        super(IRFDGenerator, self).__init__()
+        
+        self.main = nn.Sequential(
+            nn.ConvTranspose2d(input_dim, ngf * 8, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 8),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 4),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf * 2),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
+            nn.BatchNorm2d(ngf),
+            nn.ReLU(True),
+            
+            nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
+            nn.Tanh()
+        )
+        
+    def forward(self, x):
+        return self.main(x.view(x.size(0), -1, 1, 1))
+
 
 class IRFDGenerator512(nn.Module):
     def __init__(self, input_dim, ngf=64):
@@ -78,7 +109,9 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
         # Generator
-        self.Gd =  IRFDGenerator512(input_dim = 3 * 2048) 
+        # self.Gd =  IRFDGenerator512(input_dim = 3 * 2048) - doesn't work
+           # Generator
+        self.Gd = IRFDGenerator(input_dim = 3 * 2048)
         
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
@@ -163,3 +196,57 @@ class IRFDLoss(nn.Module):
         total_loss = l_identity + l_cls + l_pose + l_emotion + l_self
         
         return total_loss
+
+
+
+
+
+class AudioEncoder(nn.Module):
+    def __init__(self):
+        super(AudioEncoder, self).__init__()
+        self.wav2vec = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
+    
+    def forward(self, audio):
+        return self.wav2vec(audio).last_hidden_state
+
+class EditingModule(nn.Module):
+    def __init__(self):
+        super(EditingModule, self).__init__()
+        # Implement the editing module as described in the paper
+        # This should combine facial features with audio features
+    
+    def forward(self, facial_features, audio_features):
+        # Combine and process features
+        pass
+
+class TalkingHeadGenerator(nn.Module):
+    def __init__(self):
+        super(TalkingHeadGenerator, self).__init__()
+        # Implement the global generator Gg as described in the paper
+    
+    def forward(self, edited_features):
+        # Generate the final talking head video
+        pass
+
+class SPEAK(nn.Module):
+    def __init__(self):
+        super(SPEAK, self).__init__()
+        self.irfd = IRFD()
+        self.audio_encoder = AudioEncoder()
+        self.editing_module = EditingModule()
+        self.talking_head_generator = TalkingHeadGenerator()
+    
+    def forward(self, identity_image, emotion_video, pose_video, audio):
+        # Implement the full SPEAK pipeline
+        pass
+
+# Additional loss functions
+class PerceptualLoss(nn.Module):
+    def __init__(self):
+        super(PerceptualLoss, self).__init__()
+        # Implement perceptual loss using a pre-trained VGG network
+
+class GANLoss(nn.Module):
+    def __init__(self):
+        super(GANLoss, self).__init__()
+        # Implement GAN loss

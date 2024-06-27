@@ -11,10 +11,15 @@ from omegaconf import OmegaConf
 from datasets import load_dataset
 from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
+from torchvision.utils import save_image
 
 
 def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, global_step=0):
 
+    # Create a directory to save reconstructed images
+    recon_dir = os.path.join(config.training.output_dir, "output_images")
+    if accelerator.is_main_process:
+        os.makedirs(recon_dir, exist_ok=True)
 
     model, optimizer, dataloader = accelerator.prepare(
         model, optimizer, dataloader
@@ -59,6 +64,13 @@ def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, 
                     save_path = os.path.join(config.training.output_dir, f"checkpoint-{global_step}")
                     accelerator.save_state(save_path)
 
+            # Save reconstructed image periodically
+            if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
+                # Denormalize the image
+                x_s_recon_denorm = x_s_recon * 0.5 + 0.5
+                save_image(x_s_recon_denorm[0], os.path.join(recon_dir, f"recon_step_{global_step}.png"))
+
+
     accelerator.end_training()
 
 def main():
@@ -68,7 +80,7 @@ def main():
 
     dataset = load_dataset(config.dataset.name, split=config.dataset.split)
     preprocess = transforms.Compose([
-        transforms.Resize((config.model.sample_size, config.model.sample_size)),
+        transforms.Resize((64, 64)),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
