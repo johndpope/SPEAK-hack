@@ -42,7 +42,7 @@ def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0,
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
           
-                loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
+                loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
 
                 accelerator.backward(loss)
                 optimizer.step()
@@ -53,14 +53,24 @@ def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0,
                 global_step += 1
 
                 logs = {
-                    "loss": loss.detach().item(),
+                    "total_loss": loss.detach().item(),
+                    "identity_loss": l_identity.detach().item(),
+                    "classification_loss": l_cls.detach().item(),
+                    "pose_loss": l_pose.detach().item(),
+                    "emotion_loss": l_emotion.detach().item(),
+                    "self_reconstruction_loss": l_self.detach().item(),
                     "step": global_step,
                 }
                 progress_bar.set_postfix(**logs)
                 
                 # Log to tensorboard
                 if writer is not None and accelerator.is_main_process:
-                    writer.add_scalar('Loss/train', logs['loss'], global_step)
+                    writer.add_scalar('Loss/Total', logs['total_loss'], global_step)
+                    writer.add_scalar('Loss/Identity', logs['identity_loss'], global_step)
+                    writer.add_scalar('Loss/Classification', logs['classification_loss'], global_step)
+                    writer.add_scalar('Loss/Pose', logs['pose_loss'], global_step)
+                    writer.add_scalar('Loss/Emotion', logs['emotion_loss'], global_step)
+                    writer.add_scalar('Loss/SelfReconstruction', logs['self_reconstruction_loss'], global_step)
 
                 # The accelerator.log() call can be kept for compatibility
                 accelerator.log(logs, step=global_step)

@@ -195,7 +195,7 @@ class IRFDLoss(nn.Module):
         # Total loss
         total_loss = l_identity + l_cls + l_pose + l_emotion + l_self
         
-        return total_loss
+        return total_loss, l_identity,l_cls, l_pose ,l_emotion, l_self
 
 
 
