@@ -56,6 +56,7 @@ class IRFDGenerator512(nn.Module):
         )
         
         # Initialization scheme
+        # This specific initialization scheme (normal distribution with the chosen mean and standard deviation) is based on the recommendations from the DCGAN paper (Radford et al., 2016), which has been found to work well for various GAN architectures.
         for m in self.modules():
             if isinstance(m, nn.ConvTranspose2d):
                 nn.init.normal_(m.weight.data, 0.0, 0.02)
