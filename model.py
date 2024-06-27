@@ -62,7 +62,7 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
         # Generator
-        self.Gd = self._create_generator()
+        self.Gd =  IRFDGenerator(input_dim = 3 * 2048) 
         
         # Initialize the Emotion Recognizer
         model_name = 'enet_b0_8_va_mtl'  # Adjust as needed depending on the model availability
@@ -74,10 +74,7 @@ class IRFD(nn.Module):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
     
-    def _create_generator(self):
-    
 
-        return IRFDGenerator(input_dim = 3 * 2048) 
     
     
     def forward(self, x_s, x_t):
