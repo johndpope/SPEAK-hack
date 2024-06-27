@@ -107,8 +107,9 @@ def main():
             source_image_np = source_image.permute(1, 2, 0).numpy()
             target_image_np = target_image.permute(1, 2, 0).numpy()
 
-            emotion_labels_s = model.fer.predict_emotions(source_image_np).lower()
-            emotion_labels_t = model.fer.predict_emotions(target_image_np).lower()
+            emotion_labels_s = fer.predict_emotions(source_image_np, logits=False)[0].lower()
+            emotion_labels_t = fer.predict_emotions(target_image_np, logits=False)[0].lower()
+
 
             # Convert emotion labels to indices
             emotion_labels_s = torch.tensor([emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
