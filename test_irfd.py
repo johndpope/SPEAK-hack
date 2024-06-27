@@ -91,25 +91,24 @@ def test_irfd(config, test_image_paths):
                     reconstructed = irfd.Gd(combined_features)
                     reconstructed_images.append(reconstructed.squeeze(0))
 
-        # Visualize results
-        fig, axs = plt.subplots(num_images, num_images * num_images, figsize=(20, 5 * num_images))
-        
+        # Create a large image to hold all reconstructed images
+        grid_size = num_images * num_images
+        image_size = config.model.sample_size
+        result_image = Image.new('RGB', (grid_size * image_size, num_images * image_size))
+
         for i, img in enumerate(reconstructed_images):
-            row = i // (num_images * num_images)
-            col = i % (num_images * num_images)
-            axs[row, col].imshow(img.permute(1, 2, 0).cpu().numpy() * 0.5 + 0.5)
-            axs[row, col].axis('off')
-            
-            if col == 0:
-                axs[row, col].set_title(f"ID: {i//(num_images*num_images) + 1}")
-            if row == 0:
-                axs[row, col].set_title(f"Emotion: {(i//num_images) % num_images + 1}\nPose: {i % num_images + 1}", pad=20)
+            row = i // grid_size
+            col = i % grid_size
+            # Convert tensor to PIL Image
+            img_pil = transforms.ToPILImage()((img * 0.5 + 0.5).clamp(0, 1).cpu())
+            # Paste the image into the grid
+            result_image.paste(img_pil, (col * image_size, row * image_size))
 
-        plt.tight_layout()
-        plt.savefig('irfd_test_results.png')
-        plt.close()
+        # Save the result
+        result_image.save(f'irfd_test_results_step_{global_step}.png')
 
-        print("IRFD test completed. Results saved as 'irfd_test_results.png'")
+        print(f"IRFD test completed for step {global_step}. Results saved as 'irfd_test_results_step_{global_step}.png'")
+
 
 def main():
     config = OmegaConf.load("config.yaml")
