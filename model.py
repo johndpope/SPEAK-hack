@@ -190,10 +190,10 @@ class IRFDLoss(nn.Module):
         l_emotion = self.l2_loss(fe_s, fe_t)
         
         # Self-reconstruction loss
-        print("x_s:",x_s.shape)
-        print("x_s_recon:",x_s_recon.shape)
-        print("x_t:",x_t.shape)
-        print("x_t_recon:",x_t_recon.shape)
+        # print("x_s:",x_s.shape)
+        # print("x_s_recon:",x_s_recon.shape)
+        # print("x_t:",x_t.shape)
+        # print("x_t_recon:",x_t_recon.shape)
         
         l_self = self.l2_loss(x_s, x_s_recon) + self.l2_loss(x_t, x_t_recon)
         
