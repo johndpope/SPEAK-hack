@@ -100,8 +100,8 @@ def main():
         for i in range(0, len(examples["image"]), 2):
             source_image = preprocess(examples["image"][i].convert("RGB"))
             target_image = preprocess(examples["image"][i + 1].convert("RGB"))
-            emotion_labels_s, _ = model.fer.predict_emotions(examples["image"][i].numpy(), logits=True)
-            emotion_labels_t, _ = model.fer.predict_emotions(examples["image"][i].numpy(), logits=True)
+            emotion_labels_s, _ = model.fer.predict_emotions(examples["image"][i].convert("RGB").numpy(), logits=True)
+            emotion_labels_t, _ = model.fer.predict_emotions(examples["image"][i].convert("RGB").numpy(), logits=True)
           
 
         return {"source_image":source_image,"emotion_labels_s":emotion_labels_s,"target_image":target_image,"emotion_labels_t":emotion_labels_t}
