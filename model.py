@@ -116,7 +116,7 @@ class IRFDLoss(nn.Module):
         self.l2_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
     
-    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels):
+    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t):
         # Identity loss
         l_identity = torch.max(
             self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
@@ -124,7 +124,7 @@ class IRFDLoss(nn.Module):
         )
         
         # Classification loss
-        l_cls = self.ce_loss(fe_s, emotion_labels) + self.ce_loss(fe_t, emotion_labels)
+        l_cls = self.ce_loss(fe_s, emotion_labels_s) + self.ce_loss(fe_t, emotion_labels_t)
         
         # Pose loss
         l_pose = self.l2_loss(fp_s, fp_t)
