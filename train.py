@@ -14,7 +14,7 @@ from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
 
 
-def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, global_step=0):
+def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0, global_step=0, writer=None):
 
     # Create a directory to save reconstructed images
     recon_dir = os.path.join(config.training.output_dir, "output_images")
@@ -57,7 +57,14 @@ def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, 
                     "step": global_step,
                 }
                 progress_bar.set_postfix(**logs)
+                
+                # Log to tensorboard
+                if writer is not None and accelerator.is_main_process:
+                    writer.add_scalar('Loss/train', logs['loss'], global_step)
+
+                # The accelerator.log() call can be kept for compatibility
                 accelerator.log(logs, step=global_step)
+
 
             if global_step % config.training.save_steps == 0:
                 if accelerator.is_main_process:
@@ -76,11 +83,21 @@ def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, 
 def main():
     config = OmegaConf.load("config.yaml")
 
+  # Create the output directory if it doesn't exist
+    os.makedirs(config.training.output_dir, exist_ok=True)
+
+    # Set up logging directory
+    log_dir = os.path.join(config.training.output_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    print(f"Tensorboard logs will be saved to: {log_dir}")
+
+
     model = IRFD()
 
     dataset = load_dataset(config.dataset.name, split=config.dataset.split)
     preprocess = transforms.Compose([
-        transforms.Resize((64, 64)),
+        transforms.Resize((512, 512)),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
@@ -143,6 +160,11 @@ def main():
         log_with="tensorboard",
         project_dir=os.path.join(config.training.output_dir, "logs"),
     )
+    # Initialize tensorboard SummaryWriter
+    from torch.utils.tensorboard import SummaryWriter
+    writer = SummaryWriter(log_dir=log_dir)
+
+
     if latest_checkpoint:
         checkpoint_path = os.path.join(config.training.output_dir, latest_checkpoint)
         print(f"Loading checkpoint from {checkpoint_path}")

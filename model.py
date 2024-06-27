@@ -109,9 +109,9 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
         # Generator
-        # self.Gd =  IRFDGenerator512(input_dim = 3 * 2048) - doesn't work
+        self.Gd =  IRFDGenerator512(input_dim = 3 * 2048) #- doesn't work
            # Generator
-        self.Gd = IRFDGenerator(input_dim = 3 * 2048)
+        # self.Gd = IRFDGenerator(input_dim = 3 * 2048)
         
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 

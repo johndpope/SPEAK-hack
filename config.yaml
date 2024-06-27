@@ -19,11 +19,11 @@ training:
   num_epochs: 100
   train_batch_size: 2
   eval_batch_size: 16
-  save_image_steps: 500  # Save reconstructed image every 500 steps
+  save_image_steps: 1000  # Save reconstructed image every 500 steps
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
-  save_steps: 500
-  eval_steps: 500
+  save_steps: 1000
+  eval_steps: 1000
   logging_steps: 100
   P_mean: -0.4
   P_std: 1.0
