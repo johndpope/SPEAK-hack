@@ -75,6 +75,7 @@ class IRFD(nn.Module):
         self.emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
                                      5: 'neutral', 6: 'sad', 7: 'surprise'}
         
+        
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
@@ -105,12 +106,14 @@ class IRFD(nn.Module):
         print("fi_s:",fi_s.shape)
         print("fe_s:",fe_s.shape)
         print("fp_s:",fp_s.shape)
-        
-        emotion_pred_s = self.Cm(fe_s)
-        emotion_pred_t = self.Cm(fe_t)
 
         x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1))
         x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1))
+
+        # Apply softmax to emotion predictions
+        emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
+        emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
+      
         
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
