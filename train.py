@@ -99,7 +99,11 @@ def main():
     emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
                                      5: 'neutral', 6: 'sad', 7: 'surprise'}
     def transform(examples):
-        image_pairs = []
+        source_images = []
+        target_images = []
+        emotion_labels_s_list = []
+        emotion_labels_t_list = []
+
         for i in range(0, len(examples["image"]), 2):
             source_image = preprocess(examples["image"][i].convert("RGB"))
             target_image = preprocess(examples["image"][i + 1].convert("RGB"))
@@ -110,13 +114,20 @@ def main():
             emotion_labels_s = fer.predict_emotions(source_image_np, logits=False)[0].lower()
             emotion_labels_t = fer.predict_emotions(target_image_np, logits=False)[0].lower()
 
+            source_images.append(source_image)
+            target_images.append(target_image)
+            emotion_labels_s_list.append(emotion_idx_to_class[emotion_labels_s])
+            emotion_labels_t_list.append(emotion_idx_to_class[emotion_labels_t])
 
-            # Convert emotion labels to indices
-            emotion_labels_s = torch.tensor([emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
-            emotion_labels_t = torch.tensor([emotion_idx_to_class[label] for label in emotion_labels_t], dtype=torch.long)
-                
-        return {"source_image":source_image,"emotion_labels_s":emotion_labels_s,"target_image":target_image,"emotion_labels_t":emotion_labels_t}
+        emotion_labels_s = torch.tensor(emotion_labels_s_list, dtype=torch.long)
+        emotion_labels_t = torch.tensor(emotion_labels_t_list, dtype=torch.long)
 
+        return {
+            "source_image": source_images,
+            "emotion_labels_s": emotion_labels_s,
+            "target_image": target_images,
+            "emotion_labels_t": emotion_labels_t
+        }
     dataset.set_transform(transform)
     dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
 
