@@ -96,8 +96,11 @@ def main():
     
 
     fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
-    emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
-                                     5: 'neutral', 6: 'sad', 7: 'surprise'}
+    
+    emotion_class_to_idx = {
+        'angry': 0, 'contempt': 1, 'disgust': 2, 'fear': 3, 'happy': 4, 
+        'neutral': 5, 'sad': 6, 'surprise': 7
+    }
     def transform(examples):
         source_images = []
         target_images = []
@@ -116,8 +119,8 @@ def main():
 
             source_images.append(source_image)
             target_images.append(target_image)
-            emotion_labels_s_list.append(emotion_idx_to_class[emotion_labels_s])
-            emotion_labels_t_list.append(emotion_idx_to_class[emotion_labels_t])
+            emotion_labels_s_list.append(emotion_class_to_idx[emotion_labels_s])
+            emotion_labels_t_list.append(emotion_class_to_idx[emotion_labels_t])
 
         emotion_labels_s = torch.tensor(emotion_labels_s_list, dtype=torch.long)
         emotion_labels_t = torch.tensor(emotion_labels_t_list, dtype=torch.long)
