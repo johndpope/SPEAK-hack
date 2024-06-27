@@ -41,8 +41,8 @@ def train_loop(config, model, dataloader, optimizer):
             emotion_labels_s = batch["emotion_labels_s"]
             emotion_labels_t = batch["emotion_labels_t"]
 
-            x_s = x_s.unsqueeze(0)
-            x_t = x_t.unsqueeze(0)
+            # x_s = x_s.unsqueeze(0)
+            # x_t = x_t.unsqueeze(0)
             
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
