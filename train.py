@@ -13,7 +13,7 @@ from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
 
-def train_loop(config, model, dataloader, optimizer):
+def train_loop(config, model, dataloader, optimizer, start_epoch=0, global_step=0):
     accelerator = Accelerator(
         mixed_precision=config.training.mixed_precision,
         gradient_accumulation_steps=config.training.gradient_accumulation_steps,
@@ -27,9 +27,7 @@ def train_loop(config, model, dataloader, optimizer):
 
     criterion = IRFDLoss().to(accelerator.device)
 
-    global_step = 0
-
-    for epoch in range(config.training.num_epochs):
+    for epoch in range(start_epoch, config.training.num_epochs):
         model.train()
         progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
@@ -41,14 +39,8 @@ def train_loop(config, model, dataloader, optimizer):
             emotion_labels_s = batch["emotion_labels_s"]
             emotion_labels_t = batch["emotion_labels_t"]
 
-        
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
-
-                # print("x_s_recon:",x_s_recon.shape)
-                # print("fi_s:",fi_s.shape)
-                # print("fe_s:",fe_s.shape)
-                # print("fp_s:",fp_s.shape)
           
                 loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
 
