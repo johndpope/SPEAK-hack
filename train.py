@@ -10,6 +10,7 @@ import os
 from omegaconf import OmegaConf
 from datasets import load_dataset
 from model import IRFD, IRFDLoss
+from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
 
 def train_loop(config, model, dataloader, optimizer):
@@ -95,14 +96,20 @@ def main():
         transforms.Normalize([0.5], [0.5]),
     ])
     
+
+    fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
+    
     def transform(examples):
         image_pairs = []
         for i in range(0, len(examples["image"]), 2):
             source_image = preprocess(examples["image"][i].convert("RGB"))
             target_image = preprocess(examples["image"][i + 1].convert("RGB"))
-            emotion_labels_s, _ = model.fer.predict_emotions(examples["image"][i].convert("RGB").numpy(), logits=True)
-            emotion_labels_t, _ = model.fer.predict_emotions(examples["image"][i].convert("RGB").numpy(), logits=True)
-          
+
+            source_image_np = source_image.permute(1, 2, 0).numpy()
+            target_image_np = target_image.permute(1, 2, 0).numpy()
+
+            emotion_labels_s = model.fer.predict_emotions(source_image_np)
+            emotion_labels_t = model.fer.predict_emotions(target_image_np)
 
         return {"source_image":source_image,"emotion_labels_s":emotion_labels_s,"target_image":target_image,"emotion_labels_t":emotion_labels_t}
 
