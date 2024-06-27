@@ -65,45 +65,6 @@ class IRFDGenerator512(nn.Module):
                 
     def forward(self, x):
         return self.main(x.view(x.size(0), -1, 1, 1))
-    class IRFDGenerator64(nn.Module):
-        def __init__(self, input_dim, ngf=64):
-            super(IRFDGenerator64, self).__init__()
-            
-            self.main = nn.Sequential(
-                # Input is the concatenated identity, emotion and pose embeddings
-                # input_dim = 3 * 2048 = 6144 (assuming ResNet-50 encoders)
-                nn.ConvTranspose2d(input_dim, ngf * 8, 4, 1, 0, bias=False),
-                nn.BatchNorm2d(ngf * 8),
-                nn.ReLU(True),
-                
-                nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ngf * 4),
-                nn.ReLU(True),
-                
-                nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ngf * 2),
-                nn.ReLU(True),
-                
-                nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
-                nn.BatchNorm2d(ngf),
-                nn.ReLU(True),
-                
-                nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
-                nn.Tanh()
-                
-                # Output is a reconstructed image of shape (3, 64, 64)
-            )
-            
-            # This specific initialization scheme (normal distribution with the chosen mean and standard deviation) is based on the recommendations from the DCGAN paper (Radford et al., 2016), which has been found to work well for various GAN architectures.
-            for m in self.modules():
-                if isinstance(m, nn.ConvTranspose2d):
-                    nn.init.normal_(m.weight.data, 0.0, 0.02)
-                elif isinstance(m, nn.BatchNorm2d):
-                    nn.init.normal_(m.weight.data, 1.0, 0.02)
-                    nn.init.constant_(m.bias.data, 0)
-                    
-        def forward(self, x):
-            return self.main(x.view(x.size(0), -1, 1, 1))
         
 
 class IRFD(nn.Module):

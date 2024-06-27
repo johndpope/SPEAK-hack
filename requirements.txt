@@ -1,1 +1,21 @@
-accelerate
+# conda install pytorch3d -c pytorch3d
+
+pytorch-msssim
+chardet
+lpips
+mediapipe
+colored-traceback
+pygments 
+git+https://github.com/johndpope/colored-traceback.py.git
+torchsummary
+moviepy
+decord
+# eva-decord # mac m1 support - is it broken?
+omegaconf
+memory_profiler
+face_recognition
+facenet_pytorch
+rembg
+lpips
+tensorboard
+torch-fidelity
