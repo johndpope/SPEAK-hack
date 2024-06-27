@@ -67,6 +67,8 @@ class IRFD(nn.Module):
         # Generator
         self.Gd =  IRFDGenerator(input_dim = 3 * 2048) 
         
+        self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
+
         # Initialize the Emotion Recognizer
         model_name = 'enet_b0_8_va_mtl'  # Adjust as needed depending on the model availability
         self.fer = HSEmotionRecognizer(model_name=model_name)
@@ -104,10 +106,14 @@ class IRFD(nn.Module):
         print("fe_s:",fe_s.shape)
         print("fp_s:",fp_s.shape)
         
+        emotion_pred_s = self.Cm(fe_s)
+        emotion_pred_t = self.Cm(fe_t)
+
         x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1))
         x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1))
         
-        return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t
+        return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
+
 
 class IRFDLoss(nn.Module):
     def __init__(self, alpha=0.1):
@@ -116,15 +122,17 @@ class IRFDLoss(nn.Module):
         self.l2_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
     
-    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t):
+    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
         # Identity loss
+        # This modification compares the identity embeddings of the reconstructed images (x_s_recon and x_t_recon) with the identity embeddings of the source and target images (fi_s and fi_t), as defined in the paper.
         l_identity = torch.max(
-            self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
+            self.l2_loss(self.Ei(x_s_recon), fi_s) - self.l2_loss(self.Ei(x_t_recon), fi_t) + self.alpha,
             torch.tensor(0.0).to(fi_s.device)
         )
         
         # Classification loss
-        l_cls = self.ce_loss(fe_s, emotion_labels_s) + self.ce_loss(fe_t, emotion_labels_t)
+        l_cls = self.ce_loss(emotion_pred_s, emotion_labels_s) + self.ce_loss(emotion_pred_t, emotion_labels_t)
+
         
         # Pose loss
         l_pose = self.l2_loss(fp_s, fp_t)

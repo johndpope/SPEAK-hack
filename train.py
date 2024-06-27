@@ -50,14 +50,16 @@ def train_loop(config, model, dataloader, optimizer):
          
         
             with accelerator.accumulate(model):
-                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
+                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
+
+
                 print("x_s_recon:",x_s_recon.shape)
                 print("fi_s:",fi_s.shape)
                 print("fe_s:",fe_s.shape)
                 print("fp_s:",fp_s.shape)
 
                 
-                loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t)
+                loss = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
 
                 accelerator.backward(loss)
                 optimizer.step()
