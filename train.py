@@ -44,8 +44,8 @@ def train_loop(config, model, dataloader, optimizer):
             print("x_t:",x_t.shape)
         
             # Get emotion labels using HSEmotionRecognizer
-            emotion_labels_s = model.fer.predict_emotions(x_s)
-            emotion_labels_t = model.fer.predict_emotions(x_t)
+            emotion_labels_s = model.fer.predict_emotions(x_s.cpu().numpy())
+            emotion_labels_t = model.fer.predict_emotions(x_t.cpu().numpy())
             print("emotion_labels_s:",emotion_labels_s)
             print("emotion_labels_t:",emotion_labels_t)
         
