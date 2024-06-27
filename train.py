@@ -13,13 +13,8 @@ from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 
 
-def train_loop(config, model, dataloader, optimizer, start_epoch=0, global_step=0):
-    accelerator = Accelerator(
-        mixed_precision=config.training.mixed_precision,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        log_with="tensorboard",
-        project_dir=os.path.join(config.training.output_dir, "logs"),
-    )
+def train_loop(config, model, dataloader, optimizer, accelerator,start_epoch=0, global_step=0):
+
 
     model, optimizer, dataloader = accelerator.prepare(
         model, optimizer, dataloader
@@ -124,24 +119,26 @@ def main():
   # Check if a checkpoint exists
     latest_checkpoint = None
     if os.path.exists(config.training.output_dir):
-        print(" if os.path.exists(config.training.output_dir):")
         checkpoints = [d for d in os.listdir(config.training.output_dir) if d.startswith("checkpoint-")]
         if checkpoints:
-            print(" checkpoints")
             latest_checkpoint = max(checkpoints, key=lambda x: int(x.split("-")[1]))
 
     start_epoch = 0
     global_step = 0
-
+    accelerator = Accelerator(
+        mixed_precision=config.training.mixed_precision,
+        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+        log_with="tensorboard",
+        project_dir=os.path.join(config.training.output_dir, "logs"),
+    )
     if latest_checkpoint:
         checkpoint_path = os.path.join(config.training.output_dir, latest_checkpoint)
         print(f"Loading checkpoint from {checkpoint_path}")
-        accelerator = Accelerator()
         accelerator.load_state(checkpoint_path)
         global_step = int(latest_checkpoint.split("-")[1])
         start_epoch = global_step // len(dataloader)  # Approximate the starting epoch
 
-    train_loop(config, model, dataloader, optimizer, start_epoch, global_step)
+    train_loop(config, model, dataloader, optimizer, accelerator,start_epoch, global_step)
 
 
 if __name__ == "__main__":
