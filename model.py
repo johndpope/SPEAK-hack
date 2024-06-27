@@ -153,10 +153,6 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-        # Generate reconstructed images
-        print("fi_s:",fi_s.shape)
-        print("fe_s:",fe_s.shape)
-        print("fp_s:",fp_s.shape)
 
         x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1))
         x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1))
