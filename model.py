@@ -127,9 +127,8 @@ class IRFDLoss(nn.Module):
     
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
         # Identity loss
-        # This modification compares the identity embeddings of the reconstructed images (x_s_recon and x_t_recon) with the identity embeddings of the source and target images (fi_s and fi_t), as defined in the paper.
         l_identity = torch.max(
-            self.l2_loss(self.Ei(x_s_recon), fi_s) - self.l2_loss(self.Ei(x_t_recon), fi_t) + self.alpha,
+            self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
             torch.tensor(0.0).to(fi_s.device)
         )
         
