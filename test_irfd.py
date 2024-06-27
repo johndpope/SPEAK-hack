@@ -15,7 +15,12 @@ def test_irfd(config, test_image_paths):
     irfd = IRFD().to(device)
 
     # Initialize Accelerator
-    accelerator = Accelerator()
+    accelerator = Accelerator(
+        mixed_precision=config.training.mixed_precision,
+        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+        log_with="tensorboard",
+        project_dir=os.path.join(config.training.output_dir, "logs"),
+    )
     
     # Find the latest checkpoint
     latest_checkpoint = None
@@ -38,10 +43,7 @@ def test_irfd(config, test_image_paths):
     irfd = accelerator.prepare(irfd)
     irfd.eval()
     
-    # Load checkpoint
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    irfd.load_state_dict(checkpoint['irfd_state_dict'])
-    irfd.eval()
+
 
     # Define image transformation
     transform = transforms.Compose([
@@ -112,9 +114,8 @@ def test_irfd(config, test_image_paths):
 def main():
     config = OmegaConf.load("config.yaml")
     test_image_paths = [
-        "path/to/test_image1.jpg",
-        "path/to/test_image2.jpg",
-        "path/to/test_image3.jpg",
+        "S.png",
+        "T.png"
     ]
     test_irfd(config, test_image_paths)
 if __name__ == "__main__":
