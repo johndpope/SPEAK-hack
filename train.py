@@ -42,14 +42,20 @@ def train_loop(config, model, dataloader, optimizer):
             
             print("x_s:",x_s.shape)
             print("x_t:",x_t.shape)
-            
+        
+            # Get emotion labels using HSEmotionRecognizer
+            emotion_labels_s = model.fer.predict_emotions(x_s)
+            emotion_labels_t = model.fer.predict_emotions(x_t)
+            print("emotion_labels_s:",emotion_labels_s)
+            print("emotion_labels_t:",emotion_labels_t)
+        
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t = model(x_s, x_t)
-                
-                # Get emotion labels using HSEmotionRecognizer
-                emotion_labels_s = model.fer.predict_emotions(x_s.cpu().numpy())
-                emotion_labels_t = model.fer.predict_emotions(x_t.cpu().numpy())
-                
+                print("x_s_recon:",x_s_recon.shape)
+                print("fi_s:",fi_s.shape)
+                print("fe_s:",fe_s.shape)
+                print("fp_s:",fp_s.shape)
+
                 # Convert emotion labels to indices
                 emotion_labels_s = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_s], dtype=torch.long)
                 emotion_labels_t = torch.tensor([model.emotion_idx_to_class[label] for label in emotion_labels_t], dtype=torch.long)

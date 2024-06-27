@@ -43,6 +43,7 @@ class IRFDGenerator(nn.Module):
                 # Output is a reconstructed image of shape (3, IMAGE_SIZE, IMAGE_SIZE)
             )
             
+            # This specific initialization scheme (normal distribution with the chosen mean and standard deviation) is based on the recommendations from the DCGAN paper (Radford et al., 2016), which has been found to work well for various GAN architectures.
             for m in self.modules():
                 if isinstance(m, nn.ConvTranspose2d):
                     nn.init.normal_(m.weight.data, 0.0, 0.02)
@@ -52,6 +53,8 @@ class IRFDGenerator(nn.Module):
                     
         def forward(self, x):
             return self.main(x.view(x.size(0), -1, 1, 1))
+        
+
 class IRFD(nn.Module):
     def __init__(self):
         super(IRFD, self).__init__()
