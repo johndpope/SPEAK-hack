@@ -646,7 +646,8 @@ class CCNetIRFDGenerator(nn.Module):
             nn.Upsample(scale_factor=2),  # 256x256
             ResBlock(ngf * 4, ngf * 2),
             nn.Upsample(scale_factor=2),  # 512x512
-            ResBlock(ngf * 2, ngf)
+            ResBlock(ngf * 2, ngf),
+            nn.Upsample(scale_factor=2),  # 1024x1024
         )
         
         self.output = nn.Sequential(
