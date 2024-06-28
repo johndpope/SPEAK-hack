@@ -469,51 +469,6 @@ class GANLoss(nn.Module):
 
 
 
-from torch.nn import Softmax
-from typing import Tuple
-class CrissCrossAttention(nn.Module):
-    """Criss-Cross Attention Module"""
-    def __init__(self, in_dim: int):
-        super().__init__()
-        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
-        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
-        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
-        self.softmax = Softmax(dim=3)
-        self.gamma = nn.Parameter(torch.zeros(1))
-
-    @staticmethod
-    def create_inf_tensor(batch: int, height: int, width: int, device: torch.device) -> torch.Tensor:
-        return -torch.diag(torch.full((height,), float('inf'), device=device)).unsqueeze(0).repeat(batch * width, 1, 1)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        batch, _, height, width = x.size()
-        device = x.device
-
-        # Project queries, keys, and values
-        proj_query = self.query_conv(x)
-        proj_key = self.key_conv(x)
-        proj_value = self.value_conv(x)
-
-        # Reshape for attention computation
-        proj_query_H = proj_query.permute(0, 3, 1, 2).flatten(0, 1).transpose(1, 2)
-        proj_query_W = proj_query.permute(0, 2, 1, 3).flatten(0, 1).transpose(1, 2)
-        proj_key_H = proj_key.permute(0, 3, 1, 2).flatten(0, 1)
-        proj_key_W = proj_key.permute(0, 2, 1, 3).flatten(0, 1)
-        proj_value_H = proj_value.permute(0, 3, 1, 2).flatten(0, 1)
-        proj_value_W = proj_value.permute(0, 2, 1, 3).flatten(0, 1)
-
-        # Compute attention scores
-        energy_H = (torch.bmm(proj_query_H, proj_key_H) + self.create_inf_tensor(batch, height, width, device)).view(batch, width, height, height).permute(0, 2, 1, 3)
-        energy_W = torch.bmm(proj_query_W, proj_key_W).view(batch, height, width, width)
-        attention = self.softmax(torch.cat([energy_H, energy_W], dim=3))
-
-        # Apply attention
-        out_H = torch.bmm(proj_value_H, attention[:, :, :, :height].permute(0, 2, 1, 3).flatten(0, 1).transpose(1, 2)).view(batch, width, -1, height).permute(0, 2, 3, 1)
-        out_W = torch.bmm(proj_value_W, attention[:, :, :, height:].flatten(0, 1).transpose(1, 2)).view(batch, height, -1, width).permute(0, 2, 1, 3)
-
-        # Combine outputs
-        return self.gamma * (out_H + out_W) + x
-    
 
 '''Key differences from the original Criss-Cross Attention:
 CCNet + transformers = https://arxiv.org/pdf/1811.11721
@@ -616,7 +571,6 @@ class HybridCrissCrossTransformer(nn.Module):
         # Reshape output back to (batch_size, channels, height, width)
         return x.permute(0, 2, 1).view(batch_size, channels, height, width)
     
-
 class CCNetIRFDGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64):
         super(CCNetIRFDGenerator, self).__init__()
@@ -626,12 +580,16 @@ class CCNetIRFDGenerator(nn.Module):
         self.pose_attention = HybridCrissCrossTransformer(2048, num_heads=8)
         
         self.concat_projection = nn.Sequential(
-            nn.Conv2d(input_dim, ngf * 32, kernel_size=3, padding=1),
-            nn.BatchNorm2d(ngf * 32),
+            nn.Conv2d(input_dim, ngf * 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(ngf * 64),
             nn.ReLU(True)
         )
         
         self.resblocks = nn.Sequential(
+            ResBlock(ngf * 64, ngf * 64),
+            nn.Upsample(scale_factor=2),  # 2x2
+            ResBlock(ngf * 64, ngf * 32),
+            nn.Upsample(scale_factor=2),  # 4x4
             ResBlock(ngf * 32, ngf * 32),
             nn.Upsample(scale_factor=2),  # 8x8
             ResBlock(ngf * 32, ngf * 16),
@@ -646,12 +604,10 @@ class CCNetIRFDGenerator(nn.Module):
             nn.Upsample(scale_factor=2),  # 256x256
             ResBlock(ngf * 4, ngf * 2),
             nn.Upsample(scale_factor=2),  # 512x512
-            ResBlock(ngf * 2, ngf),
-            nn.Upsample(scale_factor=2),  # 1024x1024
         )
         
         self.output = nn.Sequential(
-            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
+            nn.Conv2d(ngf * 2, 3, kernel_size=3, padding=1, bias=False),
             nn.Tanh()
         )
         
