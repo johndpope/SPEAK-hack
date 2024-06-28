@@ -30,8 +30,7 @@ class IRFD(nn.Module):
         
         # Generator
         input_dim = 3 * 2048  # Assuming each encoder outputs a 2048-dim feature
-        # self.Gd = IRFDGeneratorSPADE(input_dim=input_dim, ngf=64, label_nc=input_dim)
-        self.Gd = IRFDGeneratorResBlocks(input_dim=input_dim, ngf=64)
+        self.Gd = CCNetIRFDGenerator(input_dim=input_dim, ngf=64)
 
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
@@ -468,3 +467,205 @@ class GANLoss(nn.Module):
     def __init__(self):
         super(GANLoss, self).__init__()
         # Implement GAN loss
+
+
+
+
+from torch.nn import Softmax
+from typing import Tuple
+class CrissCrossAttention(nn.Module):
+    """Criss-Cross Attention Module"""
+    def __init__(self, in_dim: int):
+        super().__init__()
+        self.query_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
+        self.key_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim//8, kernel_size=1)
+        self.value_conv = nn.Conv2d(in_channels=in_dim, out_channels=in_dim, kernel_size=1)
+        self.softmax = Softmax(dim=3)
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    @staticmethod
+    def create_inf_tensor(batch: int, height: int, width: int, device: torch.device) -> torch.Tensor:
+        return -torch.diag(torch.full((height,), float('inf'), device=device)).unsqueeze(0).repeat(batch * width, 1, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        batch, _, height, width = x.size()
+        device = x.device
+
+        # Project queries, keys, and values
+        proj_query = self.query_conv(x)
+        proj_key = self.key_conv(x)
+        proj_value = self.value_conv(x)
+
+        # Reshape for attention computation
+        proj_query_H = proj_query.permute(0, 3, 1, 2).flatten(0, 1).transpose(1, 2)
+        proj_query_W = proj_query.permute(0, 2, 1, 3).flatten(0, 1).transpose(1, 2)
+        proj_key_H = proj_key.permute(0, 3, 1, 2).flatten(0, 1)
+        proj_key_W = proj_key.permute(0, 2, 1, 3).flatten(0, 1)
+        proj_value_H = proj_value.permute(0, 3, 1, 2).flatten(0, 1)
+        proj_value_W = proj_value.permute(0, 2, 1, 3).flatten(0, 1)
+
+        # Compute attention scores
+        energy_H = (torch.bmm(proj_query_H, proj_key_H) + self.create_inf_tensor(batch, height, width, device)).view(batch, width, height, height).permute(0, 2, 1, 3)
+        energy_W = torch.bmm(proj_query_W, proj_key_W).view(batch, height, width, width)
+        attention = self.softmax(torch.cat([energy_H, energy_W], dim=3))
+
+        # Apply attention
+        out_H = torch.bmm(proj_value_H, attention[:, :, :, :height].permute(0, 2, 1, 3).flatten(0, 1).transpose(1, 2)).view(batch, width, -1, height).permute(0, 2, 3, 1)
+        out_W = torch.bmm(proj_value_W, attention[:, :, :, height:].flatten(0, 1).transpose(1, 2)).view(batch, height, -1, width).permute(0, 2, 1, 3)
+
+        # Combine outputs
+        return self.gamma * (out_H + out_W) + x
+    
+
+'''Key differences from the original Criss-Cross Attention:
+CCNet + transformers = https://arxiv.org/pdf/1811.11721
+Multi-head Attention: This implementation supports multiple attention heads, allowing the model to focus on different aspects of the input.
+Flexibility: The method can handle both 2D (image-like) and 1D (sequence-like) inputs, making it more versatile.
+Softmax Application: Softmax is applied separately to row and column attention, which might lead to slightly different behavior compared to the original implementation.
+'''
+class HybridCrissCrossTransformer(nn.Module):
+    def __init__(self, in_dim: int, num_heads: int = 8):
+        super().__init__()
+        self.in_dim = in_dim
+        self.num_heads = num_heads
+        self.head_dim = in_dim // num_heads
+
+        self.query = nn.Linear(in_dim, in_dim)
+        self.key = nn.Linear(in_dim, in_dim)
+        self.value = nn.Linear(in_dim, in_dim)
+
+        self.ff_network = nn.Sequential(
+            nn.Linear(in_dim, in_dim * 4),
+            nn.ReLU(),
+            nn.Linear(in_dim * 4, in_dim)
+        )
+
+        self.layer_norm1 = nn.LayerNorm(in_dim)
+        self.layer_norm2 = nn.LayerNorm(in_dim)
+
+        self.gamma = nn.Parameter(torch.zeros(1))
+
+    def criss_cross_attention(self, q, k, v, mask=None):
+        batch_size, num_heads, height, width, head_dim = q.size()
+        
+        # Reshape for easier manipulation
+        q = q.view(batch_size * num_heads, height, width, head_dim)
+        k = k.view(batch_size * num_heads, height, width, head_dim)
+        v = v.view(batch_size * num_heads, height, width, head_dim)
+
+        # Compute attention scores for rows
+        q_row = q.permute(0, 2, 1, 3).contiguous().view(batch_size * num_heads * width, height, head_dim)
+        k_row = k.permute(0, 2, 1, 3).contiguous().view(batch_size * num_heads * width, height, head_dim)
+        v_row = v.permute(0, 2, 1, 3).contiguous().view(batch_size * num_heads * width, height, head_dim)
+
+        attn_row = torch.bmm(q_row, k_row.transpose(1, 2))
+        attn_row = F.softmax(attn_row, dim=2)
+        out_row = torch.bmm(attn_row, v_row).view(batch_size, num_heads, width, height, head_dim).permute(0, 1, 3, 2, 4)
+
+        # Compute attention scores for columns
+        q_col = q.view(batch_size * num_heads * height, width, head_dim)
+        k_col = k.view(batch_size * num_heads * height, width, head_dim)
+        v_col = v.view(batch_size * num_heads * height, width, head_dim)
+
+        attn_col = torch.bmm(q_col, k_col.transpose(1, 2))
+        attn_col = F.softmax(attn_col, dim=2)
+        out_col = torch.bmm(attn_col, v_col).view(batch_size, num_heads, height, width, head_dim)
+
+        # Combine row and column attention
+        out = out_row + out_col
+
+        # Apply mask if provided
+        if mask is not None:
+            mask = mask.unsqueeze(1).unsqueeze(-1)  # Add dimensions for num_heads and head_dim
+            out = out.masked_fill(mask == 0, 0)
+
+        return out
+
+    def split_heads(self, x):
+        batch_size, seq_len, _ = x.size()
+        return x.view(batch_size, seq_len, self.num_heads, self.head_dim).permute(0, 2, 1, 3)
+
+    def combine_heads(self, x):
+        batch_size, num_heads, seq_len, head_dim = x.size()
+        return x.permute(0, 2, 1, 3).contiguous().view(batch_size, seq_len, self.in_dim)
+
+    def forward(self, x):
+        # Assuming x has shape (batch_size, channels, height, width)
+        batch_size, channels, height, width = x.size()
+        
+        # Reshape input for linear layers
+        x_flat = x.view(batch_size, channels, height * width).permute(0, 2, 1)
+        
+        residual = x_flat
+        
+        # Multi-head Criss-Cross Attention
+        q = self.split_heads(self.query(x_flat)).view(batch_size, self.num_heads, height, width, self.head_dim)
+        k = self.split_heads(self.key(x_flat)).view(batch_size, self.num_heads, height, width, self.head_dim)
+        v = self.split_heads(self.value(x_flat)).view(batch_size, self.num_heads, height, width, self.head_dim)
+        
+        attn_output = self.criss_cross_attention(q, k, v)
+        attn_output = self.combine_heads(attn_output.view(batch_size, self.num_heads, height * width, self.head_dim))
+        
+        # First add & norm
+        x = self.layer_norm1(residual + self.gamma * attn_output)
+        
+        # Feed-forward network
+        ff_output = self.ff_network(x)
+        
+        # Second add & norm
+        x = self.layer_norm2(x + ff_output)
+        
+        # Reshape output back to (batch_size, channels, height, width)
+        return x.permute(0, 2, 1).view(batch_size, channels, height, width)
+    
+
+class CCNetIRFDGenerator(nn.Module):
+    def __init__(self, input_dim, ngf=64):
+        super(CCNetIRFDGenerator, self).__init__()
+        
+        self.identity_attention = HybridCrissCrossTransformer(2048, num_heads=8)
+        self.emotion_attention = HybridCrissCrossTransformer(2048, num_heads=8)
+        self.pose_attention = HybridCrissCrossTransformer(2048, num_heads=8)
+        
+        self.concat_projection = nn.Sequential(
+            nn.Conv2d(input_dim, ngf * 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(ngf * 32),
+            nn.ReLU(True)
+        )
+        
+        self.resblocks = nn.Sequential(
+            ResBlock(ngf * 32, ngf * 32),
+            nn.Upsample(scale_factor=2),  # 8x8
+            ResBlock(ngf * 32, ngf * 16),
+            nn.Upsample(scale_factor=2),  # 16x16
+            ResBlock(ngf * 16, ngf * 16),
+            nn.Upsample(scale_factor=2),  # 32x32
+            ResBlock(ngf * 16, ngf * 8),
+            nn.Upsample(scale_factor=2),  # 64x64
+            ResBlock(ngf * 8, ngf * 8),
+            nn.Upsample(scale_factor=2),  # 128x128
+            ResBlock(ngf * 8, ngf * 4),
+            nn.Upsample(scale_factor=2),  # 256x256
+            ResBlock(ngf * 4, ngf * 2),
+            nn.Upsample(scale_factor=2),  # 512x512
+            ResBlock(ngf * 2, ngf)
+        )
+        
+        self.output = nn.Sequential(
+            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
+            nn.Tanh()
+        )
+        
+    def forward(self, identity, emotion, pose):
+        identity = identity.view(identity.size(0), -1, 1, 1)  # Reshape to (batch_size, 2048, 1, 1)
+        emotion = emotion.view(emotion.size(0), -1, 1, 1)    # Reshape to (batch_size, 2048, 1, 1)
+        pose = pose.view(pose.size(0), -1, 1, 1)            # Reshape to (batch_size, 2048, 1, 1)
+        
+        identity = self.identity_attention(identity)
+        emotion = self.emotion_attention(emotion)
+        pose = self.pose_attention(pose)
+        
+        x = torch.cat([identity, emotion, pose], dim=1)  # Concatenate along the channel dimension
+        x = self.concat_projection(x)
+        x = self.resblocks(x)
+        return self.output(x)
