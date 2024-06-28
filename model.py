@@ -69,13 +69,11 @@ class IRFD(nn.Module):
             fp_s, fp_t = fp_t, fp_s
         
 
-        # Concatenate features for generator input
-        gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
-        gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
+
         
         # Generate reconstructed images
-        x_s_recon = self.Gd(gen_input_s)
-        x_t_recon = self.Gd(gen_input_t)
+        x_s_recon = self.Gd(fi_s, fe_s, fp_s)
+        x_t_recon = self.Gd(fi_t, fe_t, fp_t)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
