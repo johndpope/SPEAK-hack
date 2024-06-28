@@ -6,3 +6,4 @@
 __pycache__/model.cpython-311.pyc
 *.pyc
 *.0
+speak/output_images/*.png

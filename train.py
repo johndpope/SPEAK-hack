@@ -12,9 +12,28 @@ from datasets import load_dataset
 from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
+from CelebADataset import CelebADataset
+
+def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, output_dir):
+    # Denormalize images
+    def denorm(x):
+        return (x * 0.5 + 0.5).clamp(0, 1)
+    
+    x_s = denorm(x_s)
+    x_t = denorm(x_t)
+    x_s_recon = denorm(x_s_recon)
+    x_t_recon = denorm(x_t_recon)
+    
+    # Concatenate input and reconstructed images
+    combined = torch.cat([x_s, x_s_recon, x_t, x_t_recon], dim=0)
+    
+    # Save up to 16 sets of images (64 images total)
+    num_sets = min(16, x_s.size(0))
+    save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}.png"), nrow=4)
 
 
-def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0, global_step=0, writer=None):
+
+def train_loop(config, model, dataloader, optimizer, accelerator, writer=None,start_epoch=0, global_step=0 ):
 
     # Create a directory to save reconstructed images
     recon_dir = os.path.join(config.training.output_dir, "output_images")
@@ -36,10 +55,17 @@ def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0,
             x_s = batch["source_image"].to(accelerator.device)
             x_t = batch["target_image"].to(accelerator.device)
             
-            emotion_labels_s = batch["emotion_labels_s"]
-            emotion_labels_t = batch["emotion_labels_t"]
+            emotion_labels_s = batch["emotion_labels_s"].to(accelerator.device)
+            emotion_labels_t = batch["emotion_labels_t"].to(accelerator.device)
+
+    
 
             with accelerator.accumulate(model):
+                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
+          
+                loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
+
+    
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
           
                 loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
@@ -83,16 +109,31 @@ def train_loop(config, model, dataloader, optimizer, accelerator, start_epoch=0,
 
             # Save reconstructed image periodically
             if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
-                # Denormalize the image
-                x_s_recon_denorm = x_s_recon * 0.5 + 0.5
-                save_image(x_s_recon_denorm[0], os.path.join(recon_dir, f"recon_step_{global_step}.png"))
-
+                save_debug_images(x_s, x_t, x_s_recon, x_t_recon, global_step, recon_dir)
+                
 
     accelerator.end_training()
 
 def main():
     config = OmegaConf.load("config.yaml")
+    preprocess = transforms.Compose([
+        transforms.Resize((512, 512)),
+        transforms.RandomHorizontalFlip(),
+        transforms.ToTensor(),
+        transforms.Normalize([0.5], [0.5]),
+    ])
 
+    # "lansinuote/gen.1.celeba" from huggingface
+    dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=config.training.train_batch_size,
+        shuffle=True,
+        num_workers=config.training.num_workers,
+        pin_memory=True
+    )
+  
   # Create the output directory if it doesn't exist
     os.makedirs(config.training.output_dir, exist_ok=True)
 
@@ -104,54 +145,6 @@ def main():
 
 
     model = IRFD()
-
-    dataset = load_dataset(config.dataset.name, split=config.dataset.split)
-    preprocess = transforms.Compose([
-        transforms.Resize((512, 512)),
-        transforms.RandomHorizontalFlip(),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
-    ])
-    
-
-    fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
-    
-    emotion_class_to_idx = {
-        'angry': 0, 'contempt': 1, 'disgust': 2, 'fear': 3, 'happy': 4, 
-        'neutral': 5, 'sad': 6, 'surprise': 7
-    }
-    def transform(examples):
-        source_images = []
-        target_images = []
-        emotion_labels_s_list = []
-        emotion_labels_t_list = []
-
-        for i in range(0, len(examples["image"]), 2):
-            source_image = preprocess(examples["image"][i].convert("RGB"))
-            target_image = preprocess(examples["image"][i + 1].convert("RGB"))
-
-            source_image_np = source_image.permute(1, 2, 0).numpy()
-            target_image_np = target_image.permute(1, 2, 0).numpy()
-
-            emotion_labels_s = fer.predict_emotions(source_image_np, logits=False)[0].lower()
-            emotion_labels_t = fer.predict_emotions(target_image_np, logits=False)[0].lower()
-
-            source_images.append(source_image)
-            target_images.append(target_image)
-            emotion_labels_s_list.append(emotion_class_to_idx[emotion_labels_s])
-            emotion_labels_t_list.append(emotion_class_to_idx[emotion_labels_t])
-
-        emotion_labels_s = torch.tensor(emotion_labels_s_list, dtype=torch.long)
-        emotion_labels_t = torch.tensor(emotion_labels_t_list, dtype=torch.long)
-
-        return {
-            "source_image": source_images,
-            "emotion_labels_s": emotion_labels_s,
-            "target_image": target_images,
-            "emotion_labels_t": emotion_labels_t
-        }
-    dataset.set_transform(transform)
-    dataloader = DataLoader(dataset, batch_size=config.training.train_batch_size, shuffle=True)
 
     optimizer = optim.Adam(model.parameters(), lr=config.optimization.learning_rate)
   
@@ -182,7 +175,7 @@ def main():
         global_step = int(latest_checkpoint.split("-")[1])
         start_epoch = global_step // len(dataloader)  # Approximate the starting epoch
 
-    train_loop(config, model, dataloader, optimizer, accelerator,start_epoch, global_step)
+    train_loop(config, model, dataloader, optimizer, accelerator,writer,start_epoch, global_step)
 
 
 if __name__ == "__main__":
