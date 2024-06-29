@@ -121,6 +121,14 @@ class IRFDLoss(nn.Module):
         x_s = F.interpolate(x_s, size=x_s_recon.shape[2:], mode='bilinear', align_corners=False)
         x_t = F.interpolate(x_t, size=x_t_recon.shape[2:], mode='bilinear', align_corners=False)
 
+# Ensure all inputs have the same batch size
+        batch_size = x_s.size(0)
+        
+        # Reshape emotion predictions and labels if necessary
+        emotion_pred_s = emotion_pred_s.view(batch_size, -1)
+        emotion_pred_t = emotion_pred_t.view(batch_size, -1)
+        emotion_labels_s = emotion_labels_s.view(batch_size)
+        emotion_labels_t = emotion_labels_t.view(batch_size)
         # Identity loss
         l_identity = torch.max(
             self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,

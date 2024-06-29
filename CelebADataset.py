@@ -55,7 +55,8 @@ class ProgressiveCelebADataset(Dataset):
         item = self.base_dataset[idx]
         
         # Resize images to current resolution
-        item["source_image"] = self.resize_transform(item["source_image"])
-        item["target_image"] = self.resize_transform(item["target_image"])
+        item["source_image"] = self.resize_transform(item["source_image"].unsqueeze(0)).squeeze(0)
+        item["target_image"] = self.resize_transform(item["target_image"].unsqueeze(0)).squeeze(0)
+        
         
         return item
