@@ -14,7 +14,6 @@ import colored_traceback.auto
 from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 
-IMAGE_SIZE = 512
 
 
 class IRFD(nn.Module):
@@ -32,11 +31,6 @@ class IRFD(nn.Module):
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
-        # Initialize the Emotion Recognizer
-        model_name = 'enet_b0_8_va_mtl'  # Adjust as needed depending on the model availability
-        self.fer = HSEmotionRecognizer(model_name=model_name)
-        self.emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
-                                     5: 'neutral', 6: 'sad', 7: 'surprise'}
         
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
@@ -247,31 +241,6 @@ class IRFDGenerator512(nn.Module):
         return self.main(x.view(x.size(0), -1, 1, 1))
 
 
-class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
-            nn.BatchNorm2d(out_channels)
-        ) if in_channels != out_channels else None
-
-    def forward(self, x):
-        identity = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        if self.downsample is not None:
-            identity = self.downsample(x)
-        out += identity
-        out = self.relu(out)
-        return out
 
 class IRFDGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64):

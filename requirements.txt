@@ -19,3 +19,4 @@ rembg
 lpips
 tensorboard
 torch-fidelity
+torchdatasets
