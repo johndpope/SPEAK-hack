@@ -31,16 +31,11 @@ class IRFD(nn.Module):
         
         # Generator
         input_dim = 3 * 2048  # Assuming each encoder outputs a 2048-dim feature
-        self.Gd = IRFDGenerator(input_dim=input_dim, ngf=64)
-
+        self.Gd = IRFDGenerator512(input_dim=input_dim, ngf=64)
+        
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
-        # Initialize the Emotion Recognizer
-        model_name = 'enet_b0_8_va_mtl'  # Adjust as needed depending on the model availability
-        self.fer = HSEmotionRecognizer(model_name=model_name)
-        self.emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
-                                     5: 'neutral', 6: 'sad', 7: 'surprise'}
         
         
     def _create_encoder(self):
@@ -68,9 +63,6 @@ class IRFD(nn.Module):
             fe_s, fe_t = fe_t, fe_s
         else:
             fp_s, fp_t = fp_t, fp_s
-        
-
-
         
         # Generate reconstructed images
         x_s_recon = self.Gd(fi_s, fe_s, fp_s)
@@ -109,11 +101,6 @@ class IRFDLoss(nn.Module):
         l_emotion = self.l2_loss(fe_s, fe_t)
         
         # Self-reconstruction loss
-        # print("x_s:",x_s.shape)
-        # print("x_s_recon:",x_s_recon.shape)
-        # print("x_t:",x_t.shape)
-        # print("x_t_recon:",x_t_recon.shape)
-        
         l_self = self.l2_loss(x_s, x_s_recon) + self.l2_loss(x_t, x_t_recon)
         
         # Total loss
@@ -190,11 +177,6 @@ class IRFDGeneratorResBlocks(nn.Module):
         return self.output(x)
 
 
-
-
-
-    
-@profile
 class SelfAttention(nn.Module):
     def __init__(self, in_channels):
         super(SelfAttention, self).__init__()
@@ -213,7 +195,7 @@ class SelfAttention(nn.Module):
         out = out.view(x.size(0), x.size(1), x.size(2), x.size(3))
         out = self.gamma * out + x
         return out
-@profile
+
 class IRFDGenerator512(nn.Module):
     def __init__(self, input_dim, ngf=64):
         super(IRFDGenerator512, self).__init__()
@@ -295,78 +277,3 @@ class CrossAttention(nn.Module):
         out = out + x
 
         return out
-
-class IRFDGenerator(nn.Module):
-    def __init__(self, input_dim, ngf=64, latent_dim=512, num_heads=8):
-        super(IRFDGenerator, self).__init__()
-
-        self.identity_encoder = nn.Sequential(
-            nn.Linear(input_dim, latent_dim),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.pose_encoder = nn.Sequential(
-            nn.Linear(input_dim, latent_dim),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-        self.expression_encoder = nn.Sequential(
-            nn.Linear(input_dim, latent_dim),
-            nn.LeakyReLU(0.2, inplace=True)
-        )
-
-        self.self_attn_identity = nn.MultiheadAttention(latent_dim, num_heads)
-        self.self_attn_pose = nn.MultiheadAttention(latent_dim, num_heads)
-        self.self_attn_expression = nn.MultiheadAttention(latent_dim, num_heads)
-
-        self.cross_attn_identity_pose = CrossAttention(latent_dim, num_heads)
-        self.cross_attn_identity_expression = CrossAttention(latent_dim, num_heads)
-        self.cross_attn_pose_expression = CrossAttention(latent_dim, num_heads)
-
-        self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(latent_dim * 3, ngf * 8, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
-
-            nn.ConvTranspose2d(ngf * 8, ngf * 8, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
-
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
-
-            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
-
-            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
-
-            nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
-            nn.Tanh()
-        )
-
-    def forward(self, identity, pose, expression):
-        # Encode input representations
-        identity_latent = self.identity_encoder(identity)
-        pose_latent = self.pose_encoder(pose)
-        expression_latent = self.expression_encoder(expression)
-
-        # Self-attention within each latent space
-        identity_latent, _ = self.self_attn_identity(identity_latent, identity_latent, identity_latent)
-        pose_latent, _ = self.self_attn_pose(pose_latent, pose_latent, pose_latent)
-        expression_latent, _ = self.self_attn_expression(expression_latent, expression_latent, expression_latent)
-
-        # Cross-attention between latent spaces
-        identity_latent = self.cross_attn_identity_pose(identity_latent, pose_latent)
-        identity_latent = self.cross_attn_identity_expression(identity_latent, expression_latent)
-        pose_latent = self.cross_attn_pose_expression(pose_latent, expression_latent)
-
-        # Concatenate attended latent representations
-        latent = torch.cat([identity_latent, pose_latent, expression_latent], dim=-1)
-
-        # Decode the latent representation
-        latent = latent.view(latent.size(0), -1, 1, 1)
-        output = self.decoder(latent)
-
-        return output

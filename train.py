@@ -13,6 +13,8 @@ from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
 from CelebADataset import CelebADataset
+from MRLR import IRFDWithMRLR
+
 
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, output_dir):
     # Denormalize images
@@ -62,12 +64,10 @@ def train_loop(config, model, dataloader, optimizer, accelerator, writer=None,st
 
             with accelerator.accumulate(model):
                 x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
-          
                 loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
 
     
-                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)
-          
+                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t = model(x_s, x_t)          
                 loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t)
 
                 accelerator.backward(loss)
@@ -144,8 +144,9 @@ def main():
     print(f"Tensorboard logs will be saved to: {log_dir}")
 
 
-    model = IRFD()
-
+    # model = IRFD()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = IRFDWithMRLR(device)
     optimizer = optim.Adam(model.parameters(), lr=config.optimization.learning_rate)
   
   # Check if a checkpoint exists
