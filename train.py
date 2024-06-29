@@ -40,7 +40,7 @@ def create_progressive_dataloader(config, base_dataset, resolution):
     progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
     return torch.utils.data.DataLoader(
         progressive_dataset,
-        batch_size=config.training.batch_size,
+        batch_size=config.training.train_batch_size,
         shuffle=True,
         num_workers=config.training.num_workers,
         pin_memory=True
@@ -89,9 +89,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
-                    x_s = x_s.unsqueeze(0)
-                    x_t = x_t.unsqueeze(0)
-        
+
                     outputs = model(x_s, x_t)
                     loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
 
