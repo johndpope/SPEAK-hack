@@ -20,3 +20,5 @@ lpips
 tensorboard
 torch-fidelity
 torchdatasets
+datasets
+hsemotion_onnx
