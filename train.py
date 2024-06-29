@@ -143,10 +143,9 @@ def main():
 
     print(f"Tensorboard logs will be saved to: {log_dir}")
 
-
-    # model = IRFD()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = IRFDWithMRLR(device)
+    model = IRFD(device)
+    # model = IRFDWithMRLR(device) - OOM
     optimizer = optim.Adam(model.parameters(), lr=config.optimization.learning_rate)
   
   # Check if a checkpoint exists

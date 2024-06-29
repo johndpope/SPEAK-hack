@@ -21,7 +21,7 @@ IMAGE_SIZE = 512
         
 
 class IRFD(nn.Module):
-    def __init__(self):
+    def __init__(self,device):
         super(IRFD, self).__init__()
         
         # Encoders
@@ -35,7 +35,7 @@ class IRFD(nn.Module):
         
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
-
+        self.to(device)
         
         
     def _create_encoder(self):
@@ -64,9 +64,11 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-        # Generate reconstructed images
-        x_s_recon = self.Gd(fi_s, fe_s, fp_s)
-        x_t_recon = self.Gd(fi_t, fe_t, fp_t)
+        # Concatenate features for generator input
+        gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
+        gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
+        x_s_recon = self.Gd(gen_input_s)
+        x_t_recon = self.Gd(gen_input_t)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
@@ -230,7 +232,7 @@ class IRFDGenerator512(nn.Module):
             nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
             nn.BatchNorm2d(ngf),
             nn.ReLU(True),
-                     nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
+            nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
             nn.Tanh()
         )
 

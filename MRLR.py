@@ -147,95 +147,70 @@ class MRLRFeatureExtractor(nn.Module):
         self.input_shape = input_shape
         self.partitions = partitions
         self.ranks = ranks
-        self.mrlr = None  # Will be initialized in forward pass
+        self.mrlr = None
 
     def forward(self, x):
         batch_size = x.shape[0]
         
-        # Print input shape for debugging
         print(f"MRLRFeatureExtractor input shape: {x.shape}")
-        print(f"Expected input shape: {(batch_size, *self.input_shape)}")
         
-        # Check if the input shape matches the expected shape
         if x.shape[1:] != self.input_shape:
             print(f"Warning: Input shape {x.shape[1:]} does not match expected shape {self.input_shape}")
             print("Adjusting input_shape to match actual input...")
             self.input_shape = x.shape[1:]
         
-        # Reshape the input to match the expected input shape
         x_reshaped = x.view(batch_size, *self.input_shape)
         
-        # Initialize MRLR if not already done
-        if self.mrlr is None:
-            self.mrlr = MRLR(x_reshaped[0], self.partitions, self.ranks)
-        
-        # Process each item in the batch
         reconstructed = []
         for item in x_reshaped:
-            self.mrlr.tensor = item  # Update the tensor in MRLR
+            if self.mrlr is None or self.mrlr.tensor.shape != item.shape:
+                self.mrlr = MRLR(item, self.partitions, self.ranks)
+            else:
+                self.mrlr.tensor = item
             recon = self.mrlr.reconstruct()
             reconstructed.append(recon)
         
-        # Stack the reconstructed tensors
         reconstructed = torch.stack(reconstructed)
         
-        # Print output shape for debugging
         print(f"MRLRFeatureExtractor output shape: {reconstructed.shape}")
         
-
+        return reconstructed.view(batch_size, -1)
 
 class IRFDWithMRLR(nn.Module):
     def __init__(self,device):
         super(IRFDWithMRLR, self).__init__()
-        self.Ei = self._create_encoder_with_mrlr((2048, 16, 16))
-        self.Ee = self._create_encoder_with_mrlr((2048, 16, 16))
-        self.Ep = self._create_encoder_with_mrlr((2048, 16, 16))
+        self.Ei = self._create_encoder_with_mrlr((2048, 7, 7))  # Correct ResNet50 output shape
+        self.Ee = self._create_encoder_with_mrlr((2048, 7, 7))  # Correct ResNet50 output shape
+        self.Ep = self._create_encoder_with_mrlr((2048, 7, 7))  # Correct ResNet50 output shape
         
-
-        input_dim = 3 * 1024  # Since you have three encoders (Ei, Ee, Ep)
+        input_dim = 3 * 2048 * 7 * 7  # Adjusted dimension
         self.Gd = IRFDGenerator512(input_dim=input_dim, ngf=64)
-        self.Cm = nn.Linear(512, 8)
-
+        self.Cm = nn.Linear(2048 * 7 * 7, 8)  # Adjusted dimension
         self.to(device)
 
     def _create_encoder_with_mrlr(self, input_shape):
         encoder = resnet50(pretrained=True)
         encoder_layers = list(encoder.children())[:-2]  # Remove avg pool and fc layers
         backbone = nn.Sequential(*encoder_layers)
-        # ResNet50 feature output shape: torch.Size([1, 2048, 7, 7])
-        # Number of channels: 2048
-        # Spatial dimensions: 7x7
-
         mrlr_extractor = MRLRFeatureExtractor(
-        input_shape=(2048, 7, 7),
-            partitions=[
-                [[0], [1, 2]],  # Separate channels from spatial dimensions
-                [[1, 2], [0]],  # Combine spatial dimensions, separate from channels
-                [[0, 1], [2]]   # Another view, combining channels with one spatial dimension
-            ],
-            ranks=[512, 256, 256]  # Adjust these based on your needs
+            input_shape=input_shape,
+            partitions=[[[0]], [[1, 2]]],  # Example partitions
+            ranks=[256, 256]  # Example ranks
         )
         return nn.Sequential(backbone, mrlr_extractor)
 
-
     def forward(self, x_s, x_t):
+        print(f"IRFDWithMRLR input shapes: x_s {x_s.shape}, x_t {x_t.shape}")
+        
         fi_s = self.Ei(x_s)
-        print("fi_s shape:", fi_s.shape())
-
         fe_s = self.Ee(x_s)
-        print("fe_s shape:", fe_s.shape())
-
         fp_s = self.Ep(x_s)
-        print("fp_s shape:", fp_s.shape())
-
+        
         fi_t = self.Ei(x_t)
-        print("fi_t shape:", fi_t.shape())
-
         fe_t = self.Ee(x_t)
-        print("fe_t shape:", fe_t.shape())
-
         fp_t = self.Ep(x_t)
-        print("fp_t shape:", fp_t.shape())
+        
+        print(f"Feature shapes: fi_s {fi_s.shape}, fe_s {fe_s.shape}, fp_s {fp_s.shape}")
         
         swap_type = torch.randint(0, 3, (1,)).item()
         if swap_type == 0:
@@ -251,5 +226,8 @@ class IRFDWithMRLR(nn.Module):
         emotion_pred_s = torch.softmax(self.Cm(fe_s), dim=1)
         emotion_pred_t = torch.softmax(self.Cm(fe_t), dim=1)
         
+        print(f"IRFDWithMRLR output shapes: x_s_recon {x_s_recon.shape}, x_t_recon {x_t_recon.shape}")
+        
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
+
 
