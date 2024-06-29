@@ -41,3 +41,21 @@ class CelebADataset(Dataset):
             "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
         }
 
+
+class ProgressiveCelebADataset(Dataset):
+    def __init__(self, base_dataset, current_resolution):
+        self.base_dataset = base_dataset
+        self.current_resolution = current_resolution
+        self.resize_transform = transforms.Resize(current_resolution)
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        item = self.base_dataset[idx]
+        
+        # Resize images to current resolution
+        item["source_image"] = self.resize_transform(item["source_image"])
+        item["target_image"] = self.resize_transform(item["target_image"])
+        
+        return item

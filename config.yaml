@@ -29,12 +29,20 @@ training:
   P_std: 1.0
   sigma_data: 0.5
   num_workers: 1
+  val_batch_size: 32
+  early_stopping_patience: 10
+  grad_clip: true
+  grad_clip_value: 1.0
+  save_epochs: 1000
+  log_steps: 100
+
 
 # Dataset configuration
 dataset:
   name: "lansinuote/gen.1.celeba"
   split: "train[:80%]"
   image_size: 64
+  val_split: 0.2 # 10% of data for validation
 
 # Optimization configuration
 optimization:
@@ -44,7 +52,8 @@ optimization:
   beta_start: 0.0001
   beta_end: 0.02
   beta_schedule: "linear"
-
+  lr_patience: 5  # Number of epochs with no improvement after which learning rate will be reduced
+  
 # Sampling configuration
 sampling:
   num_inference_steps: 50

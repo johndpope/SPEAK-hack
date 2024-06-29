@@ -17,6 +17,29 @@ import torch.nn.functional as F
 IMAGE_SIZE = 512
 
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(residual)
+        out = self.relu(out)
+        return out
         
 
 class IRFD(nn.Module):
@@ -125,110 +148,6 @@ class IRFDLoss(nn.Module):
 
 
 
-
-
-class SPADE(nn.Module):
-    def __init__(self, norm_nc, label_nc):
-        super().__init__()
-        self.param_free_norm = nn.InstanceNorm2d(norm_nc, affine=False)
-        nhidden = 128
-        self.mlp_shared = nn.Sequential(
-            nn.Conv2d(label_nc, nhidden, kernel_size=3, padding=1),
-            nn.ReLU()
-        )
-        self.mlp_gamma = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
-        self.mlp_beta = nn.Conv2d(nhidden, norm_nc, kernel_size=3, padding=1)
-
-    def forward(self, x, segmap):
-        normalized = self.param_free_norm(x)
-        segmap = F.interpolate(segmap, size=x.size()[2:], mode='nearest')
-        actv = self.mlp_shared(segmap)
-        gamma = self.mlp_gamma(actv)
-        beta = self.mlp_beta(actv)
-        out = normalized * (1 + gamma) + beta
-        return out
-
-class SPADEResnetBlock(nn.Module):
-    def __init__(self, fin, fout, label_nc):
-        super().__init__()
-        self.learned_shortcut = (fin != fout)
-        fmiddle = min(fin, fout)
-        
-        self.conv_0 = nn.Conv2d(fin, fmiddle, kernel_size=3, padding=1)
-        self.conv_1 = nn.Conv2d(fmiddle, fout, kernel_size=3, padding=1)
-        if self.learned_shortcut:
-            self.conv_s = nn.Conv2d(fin, fout, kernel_size=1, bias=False)
-        
-        self.norm_0 = SPADE(fin, label_nc)
-        self.norm_1 = SPADE(fmiddle, label_nc)
-        if self.learned_shortcut:
-            self.norm_s = SPADE(fin, label_nc)
-
-    def forward(self, x, segmap):
-        x_s = self.shortcut(x, segmap)
-        dx = self.conv_0(self.actvn(self.norm_0(x, segmap)))
-        dx = self.conv_1(self.actvn(self.norm_1(dx, segmap)))
-        out = x_s + dx
-        return out
-
-    def shortcut(self, x, segmap):
-        if self.learned_shortcut:
-            x_s = self.conv_s(self.norm_s(x, segmap))
-        else:
-            x_s = x
-        return x_s
-
-    def actvn(self, x):
-        return F.leaky_relu(x, 2e-1)
-
-# 512
-class IRFDGeneratorSPADE(nn.Module):
-    def __init__(self, input_dim, ngf=64, label_nc=3*2048):  # Assuming concatenated features
-        super(IRFDGeneratorSPADE, self).__init__()
-        
-        self.fc = nn.Linear(input_dim, 16 * ngf * 4 * 4)
-        
-        self.head_0 = SPADEResnetBlock(16 * ngf, 16 * ngf, label_nc)
-        self.G_middle_0 = SPADEResnetBlock(16 * ngf, 16 * ngf, label_nc)
-        self.G_middle_1 = SPADEResnetBlock(16 * ngf, 16 * ngf, label_nc)
-        
-        self.up_0 = SPADEResnetBlock(16 * ngf, 8 * ngf, label_nc)
-        self.up_1 = SPADEResnetBlock(8 * ngf, 4 * ngf, label_nc)
-        self.up_2 = SPADEResnetBlock(4 * ngf, 2 * ngf, label_nc)
-        self.up_3 = SPADEResnetBlock(2 * ngf, ngf, label_nc)
-        self.up_4 = SPADEResnetBlock(ngf, ngf // 2, label_nc)
-        self.up_5 = SPADEResnetBlock(ngf // 2, ngf // 4, label_nc)
-        
-        self.conv_img = nn.Conv2d(ngf // 4, 3, 3, padding=1)
-        
-    def forward(self, input):
-        segmap = input.view(input.size(0), -1, 1, 1).expand(-1, -1, 4, 4)
-        x = self.fc(input.view(input.size(0), -1))
-        x = x.view(-1, 16 * 64, 4, 4)
-        
-        x = self.head_0(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 8x8
-        x = self.G_middle_0(x, segmap)
-        x = self.G_middle_1(x, segmap)
-        
-        x = F.interpolate(x, scale_factor=2)  # 16x16
-        x = self.up_0(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 32x32
-        x = self.up_1(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 64x64
-        x = self.up_2(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 128x128
-        x = self.up_3(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 256x256
-        x = self.up_4(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 512x512
-        x = self.up_5(x, segmap)
-        x = F.interpolate(x, scale_factor=2)  # 1024x1024
-        
-        x = self.conv_img(F.leaky_relu(x, 2e-1))
-        x = torch.tanh(x)
-        
-        return x
 
 
 
