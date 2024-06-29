@@ -17,31 +17,6 @@ import torch.nn.functional as F
 IMAGE_SIZE = 512
 
 
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ResidualBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        
-        self.shortcut = nn.Sequential()
-        if in_channels != out_channels:
-            self.shortcut = nn.Sequential(
-                nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
-                nn.BatchNorm2d(out_channels)
-            )
-
-    def forward(self, x):
-        residual = x
-        out = self.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(residual)
-        out = self.relu(out)
-        return out
-        
-
 class IRFD(nn.Module):
     def __init__(self):
         super(IRFD, self).__init__()
@@ -53,9 +28,7 @@ class IRFD(nn.Module):
         
         # Generator
         input_dim = 3 * 2048  # Assuming each encoder outputs a 2048-dim feature
-        # self.Gd = IRFDGeneratorSPADE(input_dim=input_dim, ngf=64, label_nc=input_dim)
         self.Gd = IRFDGeneratorResBlocks(input_dim=input_dim, ngf=64)
-
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
@@ -65,13 +38,9 @@ class IRFD(nn.Module):
         self.emotion_idx_to_class = {0: 'angry', 1: 'contempt', 2: 'disgust', 3: 'fear', 4: 'happy', 
                                      5: 'neutral', 6: 'sad', 7: 'surprise'}
         
-        
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
-    
-
-    
     
     def forward(self, x_s, x_t):
         # Encode source and target images
@@ -92,7 +61,6 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-
         # Concatenate features for generator input
         gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
         gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
@@ -101,11 +69,14 @@ class IRFD(nn.Module):
         x_s_recon = self.Gd(gen_input_s)
         x_t_recon = self.Gd(gen_input_t)
         
+        # Resize reconstructed images to match input size
+        x_s_recon = F.interpolate(x_s_recon, size=x_s.shape[2:], mode='bilinear', align_corners=False)
+        x_t_recon = F.interpolate(x_t_recon, size=x_t.shape[2:], mode='bilinear', align_corners=False)
+        
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
         emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
       
-        
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
 
