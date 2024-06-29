@@ -117,6 +117,10 @@ class IRFDLoss(nn.Module):
         self.ce_loss = nn.CrossEntropyLoss()
     
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
+        # Ensure all images have the same size
+        x_s = F.interpolate(x_s, size=x_s_recon.shape[2:], mode='bilinear', align_corners=False)
+        x_t = F.interpolate(x_t, size=x_t_recon.shape[2:], mode='bilinear', align_corners=False)
+
         # Identity loss
         l_identity = torch.max(
             self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
@@ -125,7 +129,6 @@ class IRFDLoss(nn.Module):
         
         # Classification loss
         l_cls = self.ce_loss(emotion_pred_s, emotion_labels_s) + self.ce_loss(emotion_pred_t, emotion_labels_t)
-
         
         # Pose loss
         l_pose = self.l2_loss(fp_s, fp_t)
@@ -134,19 +137,12 @@ class IRFDLoss(nn.Module):
         l_emotion = self.l2_loss(fe_s, fe_t)
         
         # Self-reconstruction loss
-        # print("x_s:",x_s.shape)
-        # print("x_s_recon:",x_s_recon.shape)
-        # print("x_t:",x_t.shape)
-        # print("x_t_recon:",x_t_recon.shape)
-        
         l_self = self.l2_loss(x_s, x_s_recon) + self.l2_loss(x_t, x_t_recon)
         
         # Total loss
         total_loss = l_identity + l_cls + l_pose + l_emotion + l_self
         
-        return total_loss, l_identity,l_cls, l_pose ,l_emotion, l_self
-
-
+        return total_loss, l_identity, l_cls, l_pose, l_emotion, l_self
 
 
 
