@@ -154,6 +154,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
             val_loss = validate(model, create_progressive_dataloader(config, base_dataset, resolution), criterion, accelerator)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
+
             # SWA update
             if epoch > swa_start:
                 swa_model.update_parameters(model)
@@ -190,16 +191,30 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
 
 
 
-def create_progressive_dataloader(config, base_dataset, resolution):
+def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
     progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
+    
+    # Split the dataset into training and validation
+    train_size = int(0.8 * len(progressive_dataset))  # 80% for training
+    val_size = len(progressive_dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(progressive_dataset, [train_size, val_size])
+    
+    if is_validation:
+        dataset = val_dataset
+        batch_size = config.training.eval_batch_size
+        shuffle = False
+    else:
+        dataset = train_dataset
+        batch_size = config.training.train_batch_size
+        shuffle = True
+
     return torch.utils.data.DataLoader(
-        progressive_dataset,
-        batch_size=config.training.train_batch_size,
-        shuffle=True,
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
         num_workers=config.training.num_workers,
         pin_memory=True
     )
-
 
 def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution):
     writer.add_scalar(f'Loss/Total/Resolution_{resolution}', loss.item(), global_step)
