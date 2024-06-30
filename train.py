@@ -128,7 +128,7 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
 
 
 def weight_init(m):
-    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+    if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d, nn.Linear)):
         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         if m.bias is not None:
             nn.init.constant_(m.bias, 0)
@@ -282,14 +282,14 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
 
 def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
     
-    progressive_dataset = ProgressiveDataset(base_dataset, resolution)
+    # progressive_dataset = ProgressiveDataset(base_dataset, resolution)
 
-    # return torch.utils.data.DataLoader(
-    #     OverfitDataset('S.png', 'T.png'),
-    #     batch_size=1,
-    #     num_workers=config.training.num_workers,
-    #     pin_memory=True
-    # )
+    return torch.utils.data.DataLoader(
+        OverfitDataset('S.png', 'T.png'),
+        batch_size=1,
+        num_workers=config.training.num_workers,
+        pin_memory=True
+    )
     
     # Split the dataset into training and validation
     train_size = int(0.8 * len(progressive_dataset))  # 80% for training
@@ -392,8 +392,8 @@ def main():
 
 
     # Load the dataset
-    # base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
-    base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
+    base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
+    # base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
 
     # Initialize model, optimizer, and scheduler
     model = IRFD()

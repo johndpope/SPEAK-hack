@@ -21,7 +21,11 @@ class CustomResNet50(torch.nn.Module):
     def forward(self, x):
         x = self.features(x)
         x = self.avgpool(x)
-        return x.squeeze(-1).squeeze(-1)
+        x = x.squeeze(-1).squeeze(-1)
+        if torch.isnan(x).any():
+            print("NaN detected in CustomResNet50 output")
+            x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
+        return x
 
 class SimpleGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64, max_resolution=256):
@@ -115,14 +119,25 @@ class IRFD(nn.Module):
         # print(f"Input min/max/mean - x_s: {x_s.min():.4f}/{x_s.max():.4f}/{x_s.mean():.4f}, x_t: {x_t.min():.4f}/{x_t.max():.4f}/{x_t.mean():.4f}")
         
         # Encode source and target images
+        # self.Ei.eval()
+        # self.Ee.eval()
+        # self.Ep.eval()
+
         fi_s = self.Ei(x_s)
         fe_s = self.Ee(x_s)
         fp_s = self.Ep(x_s)
-        
+        # self.Ei.train()
+        # self.Ee.train()
+        # self.Ep.train()
         fi_t = self.Ei(x_t)
         fe_t = self.Ee(x_t)
         fp_t = self.Ep(x_t)
         
+        for name, param in self.named_parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
+                    print(f"NaN or Inf gradient detected in {name}")
+
         print(f"fi_s shape: {fi_s.shape}")
         print(f"fi_s statistics:")
         print(f"  Min: {fi_s.min().item():.4f}")
