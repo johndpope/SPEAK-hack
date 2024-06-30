@@ -120,3 +120,50 @@ class CelebADatasetWithAugmentation(Dataset):
             augmented_image = self.cutout(augmented_image)
         
         return augmented_image, label
+
+
+class OverfitDataset(Dataset):
+    def __init__(self, source_image_path, target_image_path, preprocess=None):
+        self.source_image = Image.open(source_image_path).convert("RGB")
+        self.target_image = Image.open(target_image_path).convert("RGB")
+        
+        if preprocess is None:
+            self.preprocess = transforms.Compose([
+                transforms.Resize((256, 256)),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+            ])
+        else:
+            self.preprocess = preprocess
+
+    def __len__(self):
+        return 1  # We only have one pair of images
+
+    def __getitem__(self, idx):
+        source_image = self.preprocess(self.source_image)
+        target_image = self.preprocess(self.target_image)
+
+        return {
+            "source_image": source_image,
+            "target_image": target_image,
+            "emotion_labels_s": torch.tensor(0, dtype=torch.long),  # Placeholder emotion label
+            "emotion_labels_t": torch.tensor(0, dtype=torch.long)   # Placeholder emotion label
+        }
+
+class ProgressiveOverfitDataset(Dataset):
+    def __init__(self, base_dataset, current_resolution):
+        self.base_dataset = base_dataset
+        self.current_resolution = current_resolution
+        self.resize_transform = transforms.Resize(current_resolution)
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        item = self.base_dataset[idx]
+        
+        # Resize images to current resolution
+        item["source_image"] = self.resize_transform(item["source_image"].unsqueeze(0)).squeeze(0)
+        item["target_image"] = self.resize_transform(item["target_image"].unsqueeze(0)).squeeze(0)
+        
+        return item

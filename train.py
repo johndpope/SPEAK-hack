@@ -12,7 +12,7 @@ from datasets import load_dataset
 from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
-from CelebADataset import CelebADataset, ProgressiveCelebADataset
+from CelebADataset import CelebADataset, ProgressiveCelebADataset,OverfitDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
@@ -81,11 +81,6 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
 
-    # Initialize SWA
-    swa_model = AveragedModel(model)
-    swa_scheduler = SWALR(optimizer, swa_lr=0.05)
-    swa_start = epochs_per_resolution // 2
-
     # Weight initialization
     model.apply(weight_init)
 
@@ -144,12 +139,13 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
             avg_loss = total_loss / len(train_dataloader)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
 
-            # Validation step
-            val_loss = validate(model, val_dataloader, criterion, accelerator)
-            print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
+            # # Validation step
+            val_loss = 0
+            # val_loss = validate(model, val_dataloader, criterion, accelerator)
+            # print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
-            # Update the scheduler with the validation loss after each epoch
-            scheduler.step(val_loss)
+            # # Update the scheduler with the validation loss after each epoch
+            # scheduler.step(val_loss)
 
             # Save checkpoint
             if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
@@ -174,7 +170,15 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
 
 
 def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
-    progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
+    
+    # progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
+
+    return torch.utils.data.DataLoader(
+        OverfitDataset('S.png', 'T.png'),
+        batch_size=1,
+        num_workers=config.training.num_workers,
+        pin_memory=True
+    )
     
     # Split the dataset into training and validation
     train_size = int(0.8 * len(progressive_dataset))  # 80% for training
