@@ -25,6 +25,12 @@ from torch.nn.utils import clip_grad_norm_
 from torch.optim.swa_utils import AveragedModel, SWALR
 
 
+
+
+
+
+
+
 # Define regular functions for the scale functions
 def triangular_scale_fn(x):
     return 1.0
@@ -171,6 +177,16 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
         print(f"Loaded {len(filtered_dict)} / {len(checkpoint_model_dict)} keys from checkpoint")
 
+    def init_weights(m):
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+
+    model.Gd.apply(init_weights)
     # Weight initialization
     model.apply(weight_init)
 
@@ -205,23 +221,25 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
                     try:
-                        # with torch.autograd.detect_anomaly():
-                        outputs = model(x_s, x_t)
-                        if outputs is None:
-                            print("Model returned None, skipping this batch")
-                            continue
-                        loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                        if torch.isnan(loss) or torch.isinf(loss):
-                            print(f"Loss is {loss}, skipping this batch")
-                            continue
-                        loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                        if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
-                            raise ValueError("NaN detected in loss components")
-                        accelerator.backward(loss)
                         
+                        accumulation_steps = 10  # Adjust as needed
+                        optimizer.zero_grad()
+                        for i in range(accumulation_steps):
+                            outputs = model(x_s, x_t)
+                            if outputs is None:
+                                print("Model returned None, skipping this batch")
+                                continue
+                            loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                            if torch.isnan(loss) or torch.isinf(loss):
+                                print(f"Loss is {loss}, skipping this batch")
+                                continue
+                            loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                            if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
+                                raise ValueError("NaN detected in loss components")
+                            accelerator.backward(loss)
+
                         if config.training.grad_clip:
-                            accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
-                        
+                            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.0)
                         optimizer.step()
                         optimizer.zero_grad()
                     except Exception as e:
@@ -282,14 +300,14 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
 
 def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
     
-    # progressive_dataset = ProgressiveDataset(base_dataset, resolution)
+    progressive_dataset = ProgressiveDataset(base_dataset, resolution)
 
-    return torch.utils.data.DataLoader(
-        OverfitDataset('S.png', 'T.png'),
-        batch_size=1,
-        num_workers=config.training.num_workers,
-        pin_memory=True
-    )
+    # return torch.utils.data.DataLoader(
+    #     OverfitDataset('S.png', 'T.png'),
+    #     batch_size=1,
+    #     num_workers=config.training.num_workers,
+    #     pin_memory=True
+    # )
     
     # Split the dataset into training and validation
     train_size = int(0.8 * len(progressive_dataset))  # 80% for training
@@ -392,14 +410,14 @@ def main():
 
 
     # Load the dataset
-    base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
-    # base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
+    # base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
+    base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
 
     # Initialize model, optimizer, and scheduler
     model = IRFD()
     optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
 
-
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     # Initialize accelerator
     accelerator = Accelerator(
         mixed_precision=config.training.mixed_precision,
