@@ -22,8 +22,8 @@ training:
   save_image_steps: 100  # Save reconstructed image every 500 steps
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
-  epochs_per_resolution: 100
-  accumulation_steps: 10 # this could be bigger
+  epochs_per_resolution: 250
+  accumulation_steps: 20 # this could be bigger
   eval_steps: 1000
   logging_steps: 100
   P_mean: -0.4

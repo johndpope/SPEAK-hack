@@ -1,0 +1,2311 @@
+License: CC BY 4.0
+arXiv:2406.18560v1 [math.GM] 27 May 2024
+A Multi-resolution Low-rank Tensor Decomposition
+Abstract
+The (efficient and parsimonious) decomposition of higher-order tensors is a fundamental problem with numerous applications in a variety of fields. Several methods have been proposed in the literature to that end, with the Tucker and PARAFAC decompositions being the most prominent ones. Inspired by the latter, in this work we propose a multi-resolution low-rank tensor decomposition to describe (approximate) a tensor in a hierarchical fashion. The central idea of the decomposition is to recast the tensor into multiple lower-dimensional tensors to exploit the structure at different levels of resolution. The method is first explained, an alternating least squares algorithm is discussed, and preliminary simulations illustrating the potential practical relevance are provided.
+
+Index Terms—  Tensor decomposition, Low-rank approximation, Kronecker decomposition, multi-resolution approximation.
+
+1Introduction
+We live in a digital age where common-life devices, from smartphones to cars, generate massive amounts of data that provide researchers and practitioners a range of opportunities. Processing contemporary information comes, however, at a cost, since data sources are messy and heterogeneous. In this context, parsimonious models emerge as an ideal tool to enhance efficiency when processing such vast amounts of information. This can be done by leveraging the structure of the data, as is the case of information living in multiple (possibly many) dimensions. Multi-dimensional data are prevalent in numerous fields, with representative examples including chemometrics, bioengineering, communications, hyper-spectral imaging, or psychometrics [1, 2]. Traditionally, matrices were used to model those datasets, but tensor-representation models have been recently breaking through. Multi-dimensional arrays, or tensors, are data structures that generalize the concept of vectors and matrices to highly-dimensional domains. In recent years, tensors have also been applied to address numerous data science and machine learning tasks, from simple interpolation to supervised classification [3].
+
+In this data-science context, a problem of particular interest is that of tensor decomposition, which tries to estimate a set of latent factors that summarize the tensor. Many tensor decompositions were developed as the generalization of well-known matrix-decomposition methods to high-dimensional domains [4, 5]. This was the case of the PARAFAC tensor decomposition [6] and its generalization, the Tucker tensor decomposition [7], which can be both understood as higher-order generalizations of the SVD decomposition of a matrix. More specifically, these decompositions aim at describing (approximating) the tensor as a sum of rank-1 tensors, decomposing it as a sum of outer products of vectors (called factors). The PARAFAC decomposition is conceptually simple and its representation complexity scales gracefully (the number of parameters grows linearly with the rank). The Tucker decomposition enjoys additional degrees of freedom at the cost of greater complexity (exponential dependence of the number of parameters with respect to the rank). Hierarchical tensor decompositions, such as the Tensor Train (TT) decomposition [8] or a hierarchical Tucker (hTucker) decomposition [9], try to alleviate this problem. The former unwraps the tensor into a chain of three-dimensional tensors, and the latter generalizes the same idea by organizing the dimensions in a binary tree. Furthermore, in recent years significant effort has been devoted to modify existing decomposition algorithms to deal with factor constraints (e.g., non-negativeness), promote certain priors (e.g., factor sparsity), or be robust to imperfections [10] [11] [12].
+
+However, little to no work has been carried out to study the tensor decomposition from a multi-resolution perspective. This can be specially interesting for tensor signals such as videos, where 2-, 3-, and 4-dimensional components are mixed in a single tensor. In this work, we postulate a simple but novel multi-resolution low-rank decomposition method. More specifically, this paper:
+
+• Introduces a new multi-resolution tensor decomposition to exploit the low-rank structure of a tensor at different resolutions.
+• Proposes an algorithm to implement the decomposition.
+• Tests the benefits of the model via numerical simulations.
+Regarding the first contribution, rather than postulating a low-rank decomposition of the tensor using the original multidimensional representation, we 1) consider a collection of lower-order multidimensional representations of the tensor (where several of the original modes of the tensor are combined into a single one); 2) postulate a low-rank decomposition for each of the lower-dimensional representations; 3) map each of the representations back to the original tensor domain; and 4) model the original tensor as the sum of such low-rank representations. As illustrated in detail in the manuscript, this results in an efficient decomposition method capable of combining low-rank structures present at different resolutions.
+
+Section 2 introduces notation and tensor preliminaries. Section 3 presents our decomposition method. A simple algorithmic approach to address the decomposition is described in Section 4. Illustrative numerical experiments are provided in Section 5.
+
+2Notation and tensor preliminaries
+The entries of a (column) vector 
+𝐱
+, a matrix 
+𝐗
+ and a tensor  
+𝐗
+   are denoted by 
+[
+𝐱
+]
+𝑛
+, 
+[
+𝐗
+]
+𝑛
+1
+,
+𝑛
+2
+ and 
+[
+ 
+𝐗
+ 
+ 
+]
+𝑛
+1
+,
+𝑛
+2
+,
+…
+,
+𝑛
+𝐼
+, respectively, with 
+𝐼
+ denoting the order of tensor  
+𝐗
+  . Moreover, the 
+𝑛
+th column of matrix 
+𝐗
+ is denoted by 
+[
+𝐗
+]
+𝑛
+. Sets are represented by calligraphic capital letters. The cardinality of a set 
+𝒮
+ is denoted by 
+|
+𝒮
+|
+. When a set 
+𝒮
+ is ordered, we use the notation 
+𝒮
+⁢
+(
+𝑖
+)
+ with 
+1
+≤
+𝑖
+≤
+|
+𝒮
+|
+ to denote the 
+𝑖
+th element of the set. The vertical concatenation of the columns of matrix 
+𝐗
+ is denoted by 
+vec
+⁢
+(
+𝐗
+)
+. 
+‖
+𝐗
+‖
+𝐹
+ is the Frobenious norm of matrix 
+𝐗
+, which can be equivalently written as 
+‖
+vec
+⁢
+(
+𝐗
+)
+‖
+2
+.
+
+2.1Tensor to matrix unfolding
+Given a tensor  
+𝐗
+   of order 
+𝐼
+ and size 
+𝑁
+1
+×
+…
+×
+𝑁
+𝐼
+, there are many ways to unfold the entries of the tensor into a matrix 
+𝐗
+. In this section, we are interested in unfoldings where the columns of matrix 
+𝐗
+ represent one of the original modes of  
+𝐗
+   and the rows of 
+𝐗
+ represent all the other modes of the tensor. Mathematically, we define the matrix unfolding operator as
+
+𝐗
+=
+mat
+𝑝
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+∈
+ℝ
+(
+𝑁
+1
+⁢
+…
+⁢
+𝑁
+𝑝
+−
+1
+⁢
+𝑁
+𝑝
++
+1
+⁢
+…
+⁢
+𝑁
+𝐼
+)
+×
+𝑁
+𝑝
+⁢
+where
+(1)
+[
+𝐗
+]
+𝑘
+,
+𝑛
+𝑝
+=
+[
+ 
+𝐗
+ 
+ 
+]
+𝑛
+1
+,
+…
+,
+𝑛
+𝐼
+⁢
+and
+𝑘
+=
+𝑛
+1
++
+∑
+𝑖
+=
+2
+,
+𝑖
+≠
+𝑝
+𝐼
+(
+𝑛
+𝑖
+−
+1
+)
+⁢
+∏
+𝑗
+=
+2
+,
+𝑗
+≠
+𝑝
+𝑖
+−
+1
+𝑁
+𝑗
+.
+where 
+𝑝
+≤
+𝐼
+ and, to simplify exposition, we have assumed that 
+𝑝
+>
+1
+.
+
+2.2Tensor to lower-order tensor unfolding
+Consider a tensor  
+𝐗
+  , of order 
+𝐼
+, and let 
+ℐ
+:=
+{
+1
+,
+2
+,
+…
+,
+𝐼
+}
+ denote the set containing the indexes of all the modes of  
+𝐗
+  .
+
+Definition 1
+The ordered set 
+𝒫
+=
+{
+𝒫
+1
+,
+…
+,
+𝒫
+𝑃
+}
+ is a partition of the set 
+ℐ
+ if it holds that: 
+𝒫
+𝑝
+≠
+∅
+ for all 
+𝑝
+, 
+𝒫
+𝑝
+∩
+𝒫
+𝑝
+′
+=
+∅
+ for all 
+𝑝
+′
+≠
+𝑝
+, and 
+⋃
+𝑝
+=
+1
+𝑃
+𝒫
+𝑝
+=
+ℐ
+.
+
+We are interested in reshaping the entries of the 
+𝐼
+th order tensor  
+𝐗
+   of size 
+𝑁
+1
+×
+…
+×
+𝑁
+𝐼
+ to generate a lower-order tensor 
+ 
+𝐗
+ 
+ 
+ˇ
+, with order 
+𝑃
+<
+𝐼
+ and according to a given partition 
+𝒫
+=
+{
+𝒫
+1
+,
+…
+,
+𝒫
+𝑃
+}
+ as specified next
+
+ 
+𝐗
+ 
+ 
+ˇ
+=
+ten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+∈
+ℝ
+∏
+𝑗
+=
+1
+|
+𝒫
+1
+|
+|
+𝒫
+1
+⁢
+(
+𝑗
+)
+|
+×
+…
+×
+∏
+𝑗
+=
+1
+|
+𝒫
+𝑃
+|
+|
+𝒫
+𝑃
+⁢
+(
+𝑗
+)
+|
+(2)
+[
+ 
+𝐗
+ 
+ 
+ˇ
+]
+𝑘
+1
+,
+…
+,
+𝑘
+|
+𝒫
+|
+=
+[
+ 
+𝐗
+ 
+ 
+]
+𝑛
+1
+,
+…
+,
+𝑛
+𝐼
+⁢
+and
+𝑘
+𝑝
+=
+𝑛
+𝒫
+𝑝
+⁢
+(
+1
+)
+⁢
+if
+⁢
+|
+𝒫
+𝑝
+|
+=
+1
+𝑘
+𝑝
+=
+𝑛
+𝒫
+𝑝
+⁢
+(
+1
+)
++
+∑
+𝑖
+=
+2
+|
+𝒫
+𝑝
+|
+(
+𝑛
+𝒫
+𝑝
+⁢
+(
+𝑖
+)
+−
+1
+)
+⁢
+∏
+𝑗
+=
+1
+𝑖
+−
+1
+𝑁
+𝒫
+𝑝
+⁢
+(
+𝑗
+)
+⁢
+if
+⁢
+|
+𝒫
+𝑝
+|
+>
+1
+Note that, according to definition of the 
+ten
+𝒫
+⁢
+(
+⋅
+)
+ operator, the indexes along the 
+𝑝
+th mode of 
+ 
+𝐗
+ 
+ 
+ˇ
+ represent tuples 
+(
+𝑚
+𝒫
+𝑝
+⁢
+(
+1
+)
+,
+…
+,
+𝑚
+𝒫
+𝑝
+⁢
+(
+|
+𝒫
+𝑝
+|
+)
+)
+ of indexes of the original tensor  
+𝐗
+  .
+
+Clearly, if 
+𝒫
+=
+{
+ℐ
+}
+, so that 
+𝑃
+=
+|
+𝒫
+|
+=
+1
+ and 
+|
+𝒫
+1
+|
+=
+𝐼
+, we have that 
+ten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+=
+vec
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+. On the other hand, if 
+𝒫
+=
+{
+{
+1
+}
+,
+{
+2
+}
+,
+…
+,
+{
+𝐼
+}
+}
+, so that 
+𝑃
+=
+|
+𝒫
+|
+=
+𝐼
+ and 
+|
+𝒫
+𝑝
+|
+=
+1
+ for all 
+𝑝
+, we have that 
+ten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+=
+ 
+𝐗
+ 
+ 
+ˇ
+.
+
+Finally, the inverse operator of (2), which recovers the original tensor  
+𝐗
+   using as input the reshaped 
+ 
+𝐗
+ 
+ 
+ˇ
+=
+ten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+, is denoted by 
+unten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+ˇ
+)
+=
+ 
+𝐗
+ 
+ 
+. Since the definition of 
+unten
+𝒫
+⁢
+(
+⋅
+)
+ starting from (2) is straightforward, it is omitted for conciseness.
+
+2.3Low-rank PARAFAC tensor decomposition
+Consider the 
+𝐼
+th order tensor  
+𝐗
+   along with the matrices 
+𝐅
+𝑖
+∈
+ℝ
+𝑁
+𝑖
+×
+𝑅
+ for 
+𝑖
+=
+1
+,
+…
+,
+𝐼
+. Then,  
+𝐗
+   is said to have rank 
+𝑅
+ if it can be written as
+
+ 
+𝐗
+ 
+ 
+=
+∑
+𝑟
+=
+1
+𝑅
+[
+𝐅
+1
+]
+𝑟
+⊚
+[
+𝐅
+2
+]
+𝑟
+⊚
+…
+⊚
+[
+𝐅
+𝐼
+]
+𝑟
+(3)
+where 
+⊚
+ is the generalization of the outer product for more than two vectors. That is, if 
+𝐱
+∈
+ℝ
+𝑁
+1
+, 
+𝐲
+∈
+ℝ
+𝑁
+2
+, 
+𝐳
+∈
+ℝ
+𝑁
+3
+ are three generic vectors, then 
+𝐱
+⊚
+𝐲
+⊚
+𝐳
+ is a tensor of order 
+𝐼
+=
+3
+ satisfying 
+[
+𝐱
+⊚
+𝐲
+⊚
+𝐳
+]
+𝑛
+1
+,
+𝑛
+2
+,
+𝑛
+3
+=
+[
+𝐱
+]
+𝑛
+1
+⁢
+[
+𝐲
+]
+𝑛
+2
+⁢
+[
+𝐳
+]
+𝑛
+3
+∈
+ℝ
+.
+
+The decomposition in (3) is oftentimes referred to as canonical polyadic decomposition or PARAFAC decomposition, with matrices 
+𝐅
+𝑖
+ being referred to as factors. As in the case of matrices, moderate values of 
+𝑅
+ induce a parsimonious description of the tensor, since the 
+∏
+𝑖
+=
+1
+𝐼
+𝑁
+𝑖
+ values in  
+𝐗
+   can be equivalently represented by the 
+∑
+𝑖
+=
+1
+𝐼
+𝑅
+⁢
+𝑁
+𝑖
+ entries in 
+{
+𝐅
+𝑖
+}
+𝑖
+=
+1
+𝐼
+.
+
+Using the Khatri-Rao product, denoted as 
+⊙
+, and the different unfolding operators introduced in the previous sections, we have that
+
+mat
+𝑝
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+=
+∑
+𝑟
+=
+1
+𝑅
+mat
+𝑝
+⁢
+(
+[
+𝐅
+1
+]
+𝑟
+⊚
+[
+𝐅
+2
+]
+𝑟
+⊚
+…
+⊚
+[
+𝐅
+𝐼
+]
+𝑟
+)
+(4)
+=
+(
+𝐅
+𝐼
+⊙
+…
+⊙
+𝐅
+𝑝
++
+1
+⊙
+𝐅
+𝑝
+−
+1
+⊙
+…
+⊙
+𝐅
+1
+)
+⁢
+(
+𝐅
+𝑝
+)
+𝑇
+ten
+𝒫
+⁢
+(
+ 
+𝐗
+ 
+ 
+)
+=
+∑
+𝑟
+=
+1
+𝑅
+ten
+𝒫
+⁢
+(
+[
+𝐅
+1
+]
+𝑟
+⊚
+[
+𝐅
+2
+]
+𝑟
+⊚
+…
+⊚
+[
+𝐅
+𝐼
+]
+𝑟
+)
+=
+∑
+𝑟
+=
+1
+𝑅
+(
+[
+𝐅
+ˇ
+1
+]
+𝑟
+⊚
+[
+𝐅
+ˇ
+2
+]
+𝑟
+⊚
+…
+⊚
+[
+𝐅
+ˇ
+𝑃
+]
+𝑟
+)
+with
+𝐅
+ˇ
+𝑝
+=
+𝐅
+𝒫
+𝑝
+⁢
+(
+|
+𝒫
+𝑝
+|
+)
+⊙
+…
+⊙
+𝐅
+𝒫
+𝑝
+⁢
+(
+2
+)
+⊙
+𝐅
+𝒫
+𝑝
+⁢
+(
+1
+)
+.
+(5)
+These expressions will be leveraged in the next section.
+
+3Multi-resolution low-rank decomposition
+Consider a collection of partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+, with 
+|
+𝒫
+(
+𝑙
+)
+|
+≤
+|
+𝒫
+(
+𝑙
+′
+)
+|
+ for 
+𝑙
+<
+𝑙
+′
+. Given the 
+𝐼
+th order tensor  
+𝐗
+   and the collection of partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+, we propose the following decomposition for the tensor at hand
+
+ 
+𝐗
+ 	
+=
+∑
+𝑙
+=
+1
+𝐿
+ 
+𝐙
+ 
+ 
+𝑙
+,
+with
+⁢
+rank
+⁢
+(
+ten
+𝒫
+(
+𝑙
+)
+⁢
+(
+ 
+𝐙
+ 
+ 
+𝑙
+)
+)
+≤
+𝑅
+𝑙
+,
+(6)
+which can be equivalently written as
+
+ 
+𝐗
+ 	
+=
+∑
+𝑙
+=
+1
+𝐿
+unten
+𝒫
+(
+𝑙
+)
+⁢
+(
+ 
+𝐙
+ 
+ 
+ˇ
+𝑙
+)
+,
+with
+⁢
+rank
+⁢
+(
+ 
+𝐙
+ 
+ 
+ˇ
+𝑙
+)
+≤
+𝑅
+𝑙
+.
+(7)
+where 
+𝑅
+𝑙
+ is the rank of the tensor associated to the 
+𝑙
+ partition.
+
+Number of parameters: As already explained, one of the most meaningful implications of low-rank tensor models is the fact that they provide a parsimonious description of the tensor, reducing its implicit number of degrees of freedom. The same is true for the decomposition in (6). To be concrete, the tensor 
+ 
+𝐙
+ 
+ 
+ˇ
+𝑙
+=
+ten
+𝒫
+(
+𝑙
+)
+⁢
+(
+ 
+𝐙
+ 
+ 
+𝑙
+)
+ has order 
+𝑃
+(
+𝑙
+)
+=
+|
+𝒫
+(
+𝑙
+)
+|
+, with the dimension of the 
+𝑝
+th mode being 
+∏
+𝑗
+=
+1
+|
+𝒫
+𝑝
+(
+𝑙
+)
+|
+|
+𝒫
+𝑝
+(
+𝑙
+)
+⁢
+(
+𝑗
+)
+|
+. As a result, 
+ 
+𝐙
+ 
+ 
+ˇ
+𝑙
+ having rank 
+𝑅
+𝑙
+ implies that
+
+𝑅
+𝑙
+⁢
+∑
+𝑝
+=
+1
+𝑃
+(
+𝑙
+)
+∏
+𝑗
+=
+1
+|
+𝒫
+𝑝
+(
+𝑙
+)
+|
+|
+𝒫
+𝑝
+(
+𝑙
+)
+⁢
+(
+𝑗
+)
+|
+parameters suffice to fully describe the 
+∏
+𝑖
+=
+1
+𝐼
+𝑁
+𝑖
+ entries in 
+ 
+𝐙
+ 
+ 
+ˇ
+𝑙
+. Summing across the different 
+𝐿
+ factors implies that
+
+∑
+𝑙
+=
+1
+𝐿
+𝑅
+𝑙
+⁢
+∑
+𝑝
+=
+1
+𝑃
+(
+𝑙
+)
+∏
+𝑗
+=
+1
+|
+𝒫
+𝑝
+(
+𝑙
+)
+|
+|
+𝒫
+𝑝
+(
+𝑙
+)
+⁢
+(
+𝑗
+)
+|
+parameters suffice to fully describe the 
+∏
+𝑖
+=
+1
+𝐼
+𝑁
+𝑖
+ entries in  
+𝐙
+  .
+
+4Algorithmic implementation
+The decomposition introduced in (6) can be obtained by solving the following minimization problem:
+
+min
+ 
+𝐙
+ 
+ 
+1
+⁢
+…
+⁢
+ 
+𝐙
+ 
+ 
+𝐿
+⁡
+‖
+ 
+𝐗
+ 
+ 
+−
+∑
+𝑙
+=
+1
+𝐿
+ 
+𝐙
+ 
+ 
+𝑙
+‖
+𝐹
+(8)
+s. t.
+⁢
+rank
+⁢
+(
+ten
+𝒫
+(
+𝑙
+)
+⁢
+(
+ 
+𝐙
+ 
+ 
+𝑙
+)
+)
+≤
+𝑅
+𝑙
+.
+The approach proposed in this section is to estimate each of the 
+𝐿
+ tensors sequentially, so that when optimizing with respect to 
+ 
+𝐙
+ 
+ 
+𝑖
+ the remaining tensors 
+ 
+𝐙
+ 
+ 
+𝑙
+ with 
+𝑙
+≠
+𝑖
+ are kept fixed. As a result, the minimization problem to be solved in the 
+𝑖
+th step is:
+
+min
+ 
+𝐙
+ 
+ 
+𝑖
+⁡
+‖
+ 
+𝐗
+ 
+ 
+−
+∑
+𝑙
+≠
+𝑖
+𝐿
+ 
+𝐙
+ 
+ 
+𝑙
+−
+ 
+𝐙
+ 
+ 
+𝑖
+‖
+𝐹
+(9)
+s. t.
+⁢
+rank
+⁢
+(
+ten
+𝒫
+(
+𝑖
+)
+⁢
+(
+ 
+𝐙
+ 
+ 
+𝑖
+)
+)
+≤
+𝑅
+𝑖
+for 
+𝑖
+=
+1
+,
+…
+,
+𝐿
+. The constraint in (9) can be handled using a PARAFAC decomposition
+
+ 
+𝐙
+ 
+ 
+𝑖
+=
+∑
+𝑗
+=
+1
+𝑅
+𝑖
+[
+𝐇
+1
+𝑖
+]
+𝑗
+⊚
+…
+⊚
+[
+𝐇
+𝐽
+𝑖
+𝑖
+]
+𝑗
+,
+(10)
+so that (9) can be equivalently formulated as:
+
+min
+𝐇
+1
+𝑖
+,
+…
+,
+𝐇
+𝐽
+𝑖
+𝑖
+⁡
+‖
+ 
+𝐗
+ 
+ 
+−
+∑
+𝑙
+≠
+𝑖
+𝐿
+ 
+𝐙
+ 
+ 
+𝑙
+−
+∑
+𝑗
+=
+1
+𝑅
+𝑖
+[
+𝐇
+1
+𝑖
+]
+𝑗
+⊚
+…
+⊚
+[
+𝐇
+𝐽
+𝑖
+𝑖
+]
+𝑗
+‖
+𝐹
+.
+(11)
+The above problem is non-convex, but fixing all but one of the factors (say the 
+𝑗
+th one), it becomes linear in 
+𝐇
+𝑗
+𝑖
+. Under this approach and unfolding the tensor into a matrix 
+𝐗
+^
+𝑖
+=
+mat
+𝑝
+⁢
+(
+ 
+𝐗
+ 
+ 
+−
+∑
+𝑙
+≠
+𝑖
+𝐿
+ 
+𝐙
+ 
+ 
+𝑙
+)
+, we have the following update rule to constructing an Alternating Least Squares (ALS) algorithm:
+
+min
+𝐇
+𝑗
+𝑖
+⁢
+‖
+𝐗
+^
+𝑖
+−
+(
+𝐇
+𝐽
+𝑖
+𝑖
+⊙
+…
+⊙
+𝐇
+𝑗
++
+1
+𝑖
+⊙
+𝐇
+𝑗
+−
+1
+𝑖
+⊙
+…
+⊙
+𝐇
+1
+𝑖
+)
+⁢
+(
+𝐇
+𝑗
+𝑖
+)
+𝑇
+‖
+𝐹
+,
+(12)
+for all 
+𝑗
+=
+1
+,
+…
+,
+𝐽
+𝑖
+. Once the 
+𝐽
+𝑖
+ factors 
+{
+𝐇
+𝑗
+𝑖
+}
+𝑗
+=
+1
+𝐽
+𝑖
+ have been obtained, then a) the 
+𝑖
+th tensor 
+ 
+𝐙
+ 
+ 
+𝑖
+ is found using (10) and b) the problem in (9) is solved for the next 
+𝑖
+, with 
+𝑖
+=
+1
+,
+…
+,
+𝐿
+. As a result, 
+∑
+𝑖
+=
+1
+𝐿
+𝐽
+𝑖
+ instances of (12) need to be run. Note that, when solving (8) via (9)-(12), the order matters. The first 
+ 
+𝐙
+ 
+ 
+𝑙
+ to be estimated provides the main (coarser) approximation, while the subsequent ones try to fit the residual error between the main tensor  
+𝐗
+   and the sum of the previously estimated components 
+ 
+𝐙
+ 
+ 
+𝑙
+, providing a finer approximation. Due to the structure 
+𝒫
+(
+𝑙
+)
+, which carries over 
+ 
+𝐙
+ 
+ 
+𝑙
+, the order in which the tensors 
+{
+ 
+𝐙
+ 
+ 
+𝑙
+}
+𝑙
+=
+1
+𝐿
+ are approximated is expected to generate variations in the results.
+
+4.1Constructing the partitions
+The algorithm in the previous section assumes that the partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+ are given. A simple generic approach to design 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+ is to rely on a regular multiresolution construction that splits the index set 
+ℐ
+=
+{
+1
+,
+2
+,
+…
+,
+𝐼
+}
+ into smaller sets with the same cardinality. More specifically, one can implement a sequential design with 
+𝐿
+=
+𝐼
+−
+1
+ steps for which, at step 
+𝑙
+∈
+{
+1
+,
+…
+,
+𝐿
+}
+ we split 
+ℐ
+ into 
+𝑙
++
+1
+ index sets with (approximately) the same number of elements. The collection of 
+𝐿
+=
+𝐼
+−
+1
+ partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+ is then naturally given by grouping together the sets obtained in each of those steps. To be more clear, let 
+⌊
+⋅
+⌋
+ and 
+⌈
+⋅
+⌉
+ be the floor and ceil operators and consider the collection of partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+ with 
+𝐿
+=
+𝐼
+−
+1
+ and where the 
+𝑙
+th element is given by
+
+𝒫
+(
+𝑙
+)
+=
+{
+𝒫
+𝑛
+(
+𝑙
+)
+}
+𝑛
+=
+1
+𝑙
++
+1
+,
+with
+𝒫
+𝑛
+(
+𝑙
+)
+=
+{
+⌈
+(
+𝑛
+−
+1
+)
+⁢
+𝐼
+/
+(
+𝑙
++
+1
+)
+⌉
+,
+…
+,
+⌊
+𝑛
+⁢
+𝐼
+/
+(
+𝑙
++
+1
+)
+⌋
+}
+.
+In the above definition we have adopted the convention that, if 
+𝑥
+ is a whole positive number, 
+⌊
+𝑥
+⌋
+=
+𝑥
+ and 
+⌈
+𝑥
+⌉
+=
+𝑥
++
+1
+. Clearly, the partition design in (4.1) is regular in the sense that it achieves 
+|
+𝒫
+(
+𝑙
+)
+|
+=
+𝑙
++
+1
+ for all 
+𝑙
+ and 
+|
+𝒫
+(
+𝑙
+)
+⁢
+(
+𝑛
+)
+|
+≈
+𝐼
+/
+(
+𝑙
++
+1
+)
+ for 
+𝑛
+=
+1
+,
+…
+,
+𝑙
++
+1
+.
+
+To gain insights, suppose for simplicity that our tensor  
+𝐗
+   of order 
+𝐼
+ has size 
+𝜂
+×
+…
+×
+𝜂
+, i.e., that the value of 
+𝑁
+𝑖
+ is the same across modes, then the number of parameters required to represent  
+𝐗
+   using the model in (6) and the partitions in (4.1) is approximately
+
+∑
+𝑙
+=
+1
+𝐼
+−
+1
+𝑅
+𝑙
+⁢
+(
+𝑙
++
+1
+)
+⁢
+𝜂
+𝐼
+/
+(
+𝑙
++
+𝑙
+)
+,
+(14)
+which contrasts with the 
+∏
+𝑖
+=
+1
+𝐼
+𝑁
+𝑖
+=
+𝜂
+𝐼
+ entries in  
+𝐗
+  .
+
+Clearly, alternative ways to build the partitions 
+𝒫
+(
+1
+)
+,…,
+𝒫
+(
+𝐿
+)
+ are possible. This is especially relevant when prior knowledge exists and one can leverage it to group indexes based on known (di-)similarities among the underlying dimensions. Due to space limitations discussing such alternative partition techniques is out of the scope of this manuscript, but it is part of our ongoing work.
+
+5Numerical experiments
+The multi-resolution low-rank (MRLR) tensor decomposition scheme is numerically tested in three different scenarios: the first dealing with an amino acids dataset [13], the second one with a video signal [14], and the third one to approximate a multivariate function. The amino acids dataset is a three-mode tensor of size 
+5
+×
+201
+×
+61
+. The video signal is composed of 173 frames of 
+1080
+×
+720
+ pixels each and three channels (R, G, and B). To reduce the computational and memory complexity requirements of the problem, the frames have been sub-sampled and the resolution has been lowered, resulting in a final four-mode tensor of size 
+9
+×
+36
+×
+54
+×
+3
+. Finally, the multidimensional function in the last scenario has 
+ℝ
+3
+ as its domain, with each of the three dimensions being discretized using 100 points, so that a tensor with 
+10
+6
+ entries is obtained. The Tensorly Python package is used to benchmark the MRLR tensor decomposition against other tensor decomposition algorithms [15].
+
+The amino acids tensor  
+𝐗
+   is approximated using a hierarchical structure of a matrix plus a three-mode tensor. The matrix can be build by unfolding the 
+5
+×
+201
+×
+61
+ tensor in different ways. Here, two reshapes have been studied, a 
+201
+×
+305
+ unfolding (res-1), and a 
+1005
+×
+61
+ unfolding (aka res-2). The structure of the algorithm resembles that of a gradient-boosting-like approach [16]. First, the initial tensor is approximated by a low-rank structure. Then, the residual is approximated by a low-rank structure too. Subsequent residuals are also approximated if necessary. This sequential process can be started from the coarser unfolding, the matrix, or the other way around (reverse). In this experiment, both alternatives have been tested. The rank of the matrix unfolding is fixed while the rank of the three-mode tensor is gradually increased.
+
+Refer to caption
+Fig. 1:Normalized Squared Frobenius Error (15) between the original 
+5
+×
+201
+×
+61
+ amino acids tensor and its approximation obtained via the MRLR and the PARAFAC tensor decompositions when the number of parameters (tensor rank) is increased.
+The performance of the algorithms has been measured in terms of Normalized Frobenius Error (
+NFE
+) between the true tensor  
+𝐗
+   and the approximation 
+ 
+𝐗
+ 
+ 
+ˇ
+, which is given by
+
+NFE
+=
+‖
+ 
+𝐗
+ 
+ 
+−
+ 
+𝐗
+ 
+ 
+ˇ
+‖
+𝐹
+/
+‖
+ 
+𝐗
+ 
+ 
+‖
+𝐹
+.
+(15)
+The results are reported in Fig. 1. The MRLR decomposition is compared to the PARAFAC decomposition. The res-1 unfolding of the matrix (square-like unfolding) seems to perform better than the res-2 unfolding (tall unfolding). Then, the approximation from the coarser to the finer arrangement beats the reverse one. Moreover, all the MRLR schemes outperform the PARAFAC one in terms of 
+NFE
+ for the same number of parameters. Indeed, the best-performing MRLR algorithm obtains roughly the same 
+NFE
+ as the PARAFAC decomposition using 
+10
+,
+000
+ parameters less approximately.
+
+In the second test case, the four-mode video tensor  
+𝐗
+   is unfolded into a 
+324
+×
+162
+ matrix and a 
+9
+×
+36
+×
+162
+ three-mode tensor. The ranks of the matrix and the three-mode tensors have been fixed to 1. The rank of the four-mode tensor approximation is gradually increased. The results are provided in Fig. 2. Again, the coarser-to-finer arrangement outperforms both, the reverse (finer-to-coarser) arrangement, and the PARAFAC decomposition. It needs approximately 
+1
+,
+500
+ parameters less to achieve the same 
+NFE
+.
+
+Refer to caption
+Fig. 2:Normalized Squared Frobenius Error (15) between the original 
+9
+×
+36
+×
+54
+×
+3
+ video signal tensor and its approximation obtained via the MRLR and the PARAFAC tensor decompositions when the number of parameters (tensor rank) is increased.
+Finally, we tested the MRLR tensor decomposition in a third test case to approximate a multivariate function. Given a set of 
+𝐼
+ input variables, with 
+𝑥
+𝑖
+ denoting the 
+𝑖
+th input variable and 
+𝒳
+𝑖
+ the set of all possible values of 
+𝑥
+𝑖
+, we are interested in functions that map any element 
+(
+𝑥
+1
+,
+…
+,
+𝑥
+𝐼
+)
+∈
+𝒳
+ into a real value. When these functions are discrete, tensors can be used to model them efficiently. Continuous functions can be discretized/quantized. Tensor decomposition methods can then be leveraged for applications such as approximation, or denoising [17]. In such a context, we tested the MRLR tensor decomposition algorithm to model the following multivariate continuous function 
+𝑓
+:
+ℝ
+3
+↦
+ℝ
+:
+
+𝑓
+⁢
+(
+𝑥
+1
+,
+𝑥
+2
+,
+𝑥
+3
+)
+=
+𝑥
+1
+2
++
+𝑥
+2
+2
+𝑒
+|
+𝑥
+2
++
+𝑥
+3
+|
+.
+(16)
+Sampling a three dimensional grid of discrete values ranging from 
+−
+5
+ to 
+5
+ with an step-size of 
+0.1
+ leads to a 
+100
+×
+100
+×
+100
+ tensor  
+𝐗
+   that summarizes the multivariate function in (16). The tensor  
+𝐗
+   can be approximated using the MRLR tensor decomposition to leverage parsimony. The tensor  
+𝐗
+   is unfolded into a 
+10000
+×
+100
+ matrix, and the coarser-to-finer setup has been implemented. The performance of the MRLR tensor decomposition is again compared to that of the PARAFAC decomposition in terms of 
+NFE
+ for an increasing number of parameters. The results are shown in Fig. 3. As in previous scenarios, the MRLR decomposition outperforms the PARAFAC decomposition for the same number of parameters consistently. At some points, the difference between both algorithms is particularly high. For example, the MRLR tensor decomposition needs roughly 
+15
+,
+000
+ parameters to achieve 
+1
+%
+ of 
+NFE
+, while the PARAFAC decomposition needs more than 
+30
+,
+000
+ parameters.
+
+Refer to caption
+Fig. 3:Normalized Squared Frobenius Error (15) between the 
+100
+×
+100
+×
+100
+ tensor sampled from the multivariate function in (16) and its approximation obtained via the MRLR and the PARAFAC tensor decompositions when the number of parameters (tensor rank) is increased.
+6Conclusions
+This paper presented a parsimonious multi-resolution low-rank (MRLR) tensor decomposition to approximate a tensor as a sum of low-order tensor unfoldings. An Alternating Least Squares (ALS) algorithm was proposed to implement the MRLR tensor decomposition. Then, the MRLR tensor decomposition was compared against the PARAFAC decomposition in two real-case scenarios, and also in a multivariate function approximation problem. The MRLR tensor decomposition outperformed the PARAFAC decomposition for the same number of parameters, showing that it can efficiently leverage information defined at different dimensional orders.
+
+References
+[1]
+R. Bro, “Parafac. tutorial and applications,” Chemometrics and Intelligent Laboratory Systems, vol. 38, no. 2, pp. 149–171, 1997.
+[2]
+R. B. Cattell, “Parallel proportional profiles and other principles for determining the choice of factors by rotation,” Psychometrika, vol. 9, no. 4, pp. 267–283, 1944.
+[3]
+E. E. Papalexakis, C. Faloutsos, and N. D. Sidiropoulos, “Tensors for data mining and data fusion: Models, applications, and scalable algorithms,” ACM Transactions on Intelligent Systems and Technology (TIST), vol. 8, no. 2, pp. 1–44, 2016.
+[4]
+T. G. Kolda and B. W. Bader, “Tensor decompositions and applications,” SIAM Review, vol. 51, no. 3, pp. 455–500, 2009.
+[5]
+N. D. Sidiropoulos, L. De Lathauwer, X. Fu, K. Huang, E. E. Papalexakis, and C. Faloutsos, “Tensor decomposition for signal processing and machine learning,” IEEE Transactions on Signal Processing, vol. 65, no. 13, pp. 3551–3582, 2017.
+[6]
+R. A. Harshman, “Foundations of the parafac procedure: Models and conditions for an “explanatory” multimodal factor analysis,” UCLA Working Papers Phonetics, vol. 16, pp. 1–84, 1970.
+[7]
+L. R. Tucker, “Some mathematical notes on three-mode factor analysis,” Psychometrika, vol. 31, no. 3, pp. 279–311, 1966.
+[8]
+I. V. Oseledets, “Tensor-train decomposition,” SIAM Journal on Scientific Computing, vol. 33, no. 5, pp. 2295–2317, 2011.
+[9]
+L. Grasedyck, D. Kressner, and C. Tobler, “A literature survey of low-rank tensor approximation techniques,” GAMM-Mitteilungen, vol. 36, no. 1, pp. 53–78, 2013.
+[10]
+D. Wang, F. Cong, and T. Ristaniemi, “Higher-order nonnegative candecomp/parafac tensor decomposition using proximal algorithm,” in IEEE International Conference on Acoustics, Speech and Signal Processing (ICASSP).   IEEE, 2019, pp. 3457–3461.
+[11]
+Q. Xie, Q. Zhao, D. Meng, and Z. Xu, “Kronecker-basis-representation based tensor sparsity and its applications to tensor recovery,” IEEE Transactions on Pattern Analysis and Machine Intelligence, vol. 40, no. 8, pp. 1888–1902, 2017.
+[12]
+O. Kaya and B. Uçar, “Parallel candecomp/parafac decomposition of sparse tensors using dimension trees,” SIAM Journal on Scientific Computing, vol. 40, no. 1, pp. C99–C130, 2018.
+[13]
+R. Bro, “Multi-way analysis in the food industry-models, algorithms, and applications,” Ph.D. dissertation, University of Amsterdam (NL), 1998.
+[14]
+S. Rozada, “Multi-resolution low-rank tensor decomposition,” https://github.com/sergiorozada12/multiresolution-tensor-decomposition, 2021.
+[15]
+J. Kossaifi, Y. Panagakis, A. Anandkumar, and M. Pantic, “Tensorly: Tensor learning in python,” arXiv preprint arXiv:1610.09555, 2016.
+[16]
+J. H. Friedman, “Greedy function approximation: a gradient boosting machine,” Annals of Statistics, pp. 1189–1232, 2001.
+[17]
+N. Kargas and N. D. Sidiropoulos, “Supervised learning and canonical decomposition of multivariate functions,” IEEE Transactions on Signal Processing, vol. 69, pp. 1097–1107, 2021.

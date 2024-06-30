@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 import os
 from omegaconf import OmegaConf
 from datasets import load_dataset
-from model import IRFD, IRFDLoss
+from model import IRFD, IRFDLoss,IRFDWithMRLR
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
 from CelebADataset import CelebADataset, ProgressiveDataset,OverfitDataset,AffectNetDataset
@@ -143,7 +143,7 @@ def weight_init(m):
         nn.init.constant_(m.bias, 0)
 
 def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
-    resolutions = [64, 128, 256]
+    resolutions = [224] # can't handle smaller than 256 - otherwise resnet returns problematic tensor features 2048,1,1 vs 2048,7,7
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
     
@@ -394,7 +394,7 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((256, 256)),
+        transforms.Resize((224, 224)),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
@@ -408,15 +408,24 @@ def main():
     base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
 
     # Initialize model, optimizer, and scheduler
-    model = IRFD()
-    # optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
-    optimizer = torch.optim.Adam([
-        {'params': model.Ee.features[0].parameters(), 'lr': 1e-5},
-        {'params': [p for n, p in model.named_parameters() if not n.startswith('Ee.features.0')], 'lr': 1e-4}
-    ])
+    # model = IRFD()
+
+    # Initialize accelerator
+    accelerator = Accelerator(
+        mixed_precision=config.training.mixed_precision,
+        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
+        log_with="tensorboard",
+        project_dir=os.path.join(config.training.output_dir, "logs"),
+    )
+
+    model = IRFDWithMRLR(accelerator.device)
 
 
-
+    optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
+    # optimizer = torch.optim.Adam([
+    #     {'params': model.Ee.features[0].parameters(), 'lr': 1e-5},
+    #     {'params': [p for n, p in model.named_parameters() if not n.startswith('Ee.features.0')], 'lr': 1e-4}
+    # ])
 
     tracker = GradientTracker()
 
@@ -425,13 +434,6 @@ def main():
             param.register_hook(tracker.hook_fn(name))
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-    # Initialize accelerator
-    accelerator = Accelerator(
-        mixed_precision=config.training.mixed_precision,
-        gradient_accumulation_steps=config.training.gradient_accumulation_steps,
-        log_with="tensorboard",
-        project_dir=os.path.join(config.training.output_dir, "logs"),
-    )
 
     # Initialize tensorboard SummaryWriter
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
