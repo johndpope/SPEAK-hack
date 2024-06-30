@@ -11,33 +11,17 @@ FEATURE_SIZE_AVG_POOL = 2 # use 2 - not 4. https://github.com/johndpope/MegaPort
 FEATURE_SIZE = (2, 2) 
 
 
-class CustomResNet50(nn.Module):
-    def __init__(self, *args, **kwargs):
+class CustomResNet50(torch.nn.Module):
+    def __init__(self):
         super().__init__()
-        resnet = models.resnet50(*args, **kwargs)
-        self.layers = nn.ModuleList([
-            nn.Sequential(resnet.conv1, resnet.bn1, resnet.relu, resnet.maxpool),
-            resnet.layer1,
-            resnet.layer2,
-            resnet.layer3
-        ])
-        self.adaptive_avg_pool = nn.AdaptiveAvgPool2d(FEATURE_SIZE_AVG_POOL)
-        self.conv_reduce = nn.Conv2d(1024, 512, kernel_size=1)
+        resnet = models.resnet50(pretrained=True)
+        self.features = torch.nn.Sequential(*list(resnet.children())[:-2])
+        self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
 
     def forward(self, x):
-        # Adjust input range from [-1, 1] to [0, 1] for ResNet
-        x = (x + 1) / 2
-
-        for i, layer in enumerate(self.layers):
-            x = layer(x)
-            if torch.isnan(x).any():
-                print(f"NaN detected after layer {i}")
-                print(f"Input stats: min={x.min().item():.4f}, max={x.max().item():.4f}, mean={x.mean().item():.4f}")
-                return None  # Early exit to avoid further computation
-        
-        x = self.adaptive_avg_pool(x)
-        x = self.conv_reduce(x)
-        return x
+        x = self.features(x)
+        x = self.avgpool(x)
+        return x.squeeze(-1).squeeze(-1)
 
 class SimpleGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64, max_resolution=256):
@@ -139,7 +123,21 @@ class IRFD(nn.Module):
         fe_t = self.Ee(x_t)
         fp_t = self.Ep(x_t)
         
-        
+        print(f"fi_s shape: {fi_s.shape}")
+        print(f"fi_s statistics:")
+        print(f"  Min: {fi_s.min().item():.4f}")
+        print(f"  Max: {fi_s.max().item():.4f}")
+        print(f"  Mean: {fi_s.mean().item():.4f}")
+        print(f"  Std: {fi_s.std().item():.4f}")
+
+        print(f"fi_t shape: {fi_t.shape}")
+        print(f"fi_t statistics:")
+        print(f"  Min: {fi_t.min().item():.4f}")
+        print(f"  Max: {fi_t.max().item():.4f}")
+        print(f"  Mean: {fi_t.mean().item():.4f}")
+        print(f"  Std: {fi_t.std().item():.4f}")
+
+
          # Conditional swapping
         if self.enable_swapping:
             swap_type = torch.randint(0, 3, (1,)).item()
@@ -167,6 +165,14 @@ class IRFD(nn.Module):
         x_s_recon = self.Gd(gen_input_s, target_resolution)
         x_t_recon = self.Gd(gen_input_t, target_resolution)
         
+        print("Feature extraction successful!")
+        print(f"Feature shape: {x_s_recon.shape}")
+        print(f"Feature statistics:")
+        print(f"  Min: {x_s_recon.min().item():.4f}")
+        print(f"  Max: {x_s_recon.max().item():.4f}")
+        print(f"  Mean: {x_s_recon.mean().item():.4f}")
+        print(f"  Std: {x_s_recon.std().item():.4f}")
+
         # print(f"Reconstructed images - x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
         # print(f"Reconstructed min/max/mean - x_s_recon: {x_s_recon.min():.4f}/{x_s_recon.max():.4f}/{x_s_recon.mean():.4f}")
         
