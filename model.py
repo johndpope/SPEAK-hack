@@ -121,6 +121,10 @@ class IRFD(nn.Module):
         gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
         gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
         
+        # we randomly swap one type of facial feature code and concatenate two sets
+        # of facial feature information extracted from 𝑆 and 𝑇 , which
+        # are then fed into the IRFD generator 𝐺𝑑 [ 18] to generate two
+        # fake facial images, denoted as 𝐼𝑑 
         # Generate reconstructed images
         x_s_recon = self.Gd(gen_input_s)
         x_t_recon = self.Gd(gen_input_t)
