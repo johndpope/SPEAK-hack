@@ -17,7 +17,7 @@ model:
 training:
   output_dir: "./speak"
   num_epochs: 100
-  train_batch_size: 2
+  train_batch_size: 1
   eval_batch_size: 16
   save_image_steps: 500  # Save reconstructed image every 500 steps
   gradient_accumulation_steps: 1
@@ -48,7 +48,7 @@ dataset:
 
 # Optimization configuration
 optimization:
-  learning_rate: 1e-4
+  learning_rate: 1e-6
   lr_warmup_steps: 500
   num_train_timesteps: 1000
   beta_start: 0.0001

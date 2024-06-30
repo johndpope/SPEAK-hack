@@ -135,10 +135,6 @@ def weight_init(m):
     elif isinstance(m, nn.BatchNorm2d):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
-    elif isinstance(m, nn.Linear):
-        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-        nn.init.constant_(m.bias, 0)
-
 
 def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
     resolutions = [64, 128, 256]
@@ -209,7 +205,15 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
                     try:
+                        # with torch.autograd.detect_anomaly():
                         outputs = model(x_s, x_t)
+                        if outputs is None:
+                            print("Model returned None, skipping this batch")
+                            continue
+                        loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                        if torch.isnan(loss) or torch.isinf(loss):
+                            print(f"Loss is {loss}, skipping this batch")
+                            continue
                         loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
                         if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
                             raise ValueError("NaN detected in loss components")
@@ -378,11 +382,14 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((256, 256)),  # Start with the highest resolution
+        transforms.Resize((256, 256)),
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        transforms.Lambda(lambda x: torch.clamp(x, -1, 1))  # Clamp values to [-1, 1]
     ])
+
+
 
     # Load the dataset
     # base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)

@@ -23,7 +23,7 @@ class AffectNetDataset(Dataset):
         
         # Define emotion class to index mapping
         self.emotion_class_to_idx = {str(i): i for i in range(8)}
-        
+
         # Load image paths and their corresponding emotion labels
         self.image_paths = []
         self.emotion_labels = []
@@ -161,12 +161,13 @@ class CelebADatasetWithAugmentation(Dataset):
         self.transform = transforms.Compose([
             transforms.RandomHorizontalFlip(),
             transforms.RandomRotation(10),
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.ColorJitter(brightness=0.5, contrast=0.5, saturation=0.5, hue=0.2),  # Increase brightness and contrast
             transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
             transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
             transforms.ToTensor(),
             transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
         ])
+        
         
         self.cutout = transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0, inplace=False)
 
