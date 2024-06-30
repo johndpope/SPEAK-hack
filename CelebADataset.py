@@ -22,7 +22,7 @@ class CelebADataset(Dataset):
         self.use_greenscreen = False
 
     def __len__(self):
-        return len(self.dataset) // 2  # We're processing pairs of images
+        return 1000 #len(self.dataset) // 2  # We're processing pairs of images
 
     def remove_bg(self, image):
         img_byte_arr = io.BytesIO()

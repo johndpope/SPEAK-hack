@@ -1,18 +1,9 @@
 import torch
 import torch.nn as nn
-import torch.optim as optim
 from torchvision.models import resnet50
-from torch.utils.data import DataLoader
-from torchvision import transforms
-from accelerate import Accelerator
-from tqdm.auto import tqdm
-import os
-from omegaconf import OmegaConf
-from datasets import load_dataset
-from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 import colored_traceback.auto
-from transformers import Wav2Vec2Model
 import torch.nn.functional as F
+
 
 class ResBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
@@ -41,47 +32,72 @@ class ResBlock(nn.Module):
         return out
 
 class IRFDGeneratorResBlocks(nn.Module):
-    def __init__(self, input_dim, ngf=64):
+    def __init__(self, input_dim, ngf=64, max_resolution=512):
         super(IRFDGeneratorResBlocks, self).__init__()
         
+        self.input_dim = input_dim
+        self.ngf = ngf
+        self.max_resolution = max_resolution
+        
+        # Initial upsampling
         self.initial = nn.Sequential(
-            nn.ConvTranspose2d(input_dim, ngf * 32, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 32),
+            nn.ConvTranspose2d(input_dim, ngf * 8, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 8),
             nn.ReLU(True)
         )
         
-        self.resblocks = nn.Sequential(
-            ResBlock(ngf * 32, ngf * 32),
-            nn.Upsample(scale_factor=2),  # 8x8
-            ResBlock(ngf * 32, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 16x16
-            ResBlock(ngf * 16, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 32x32
-            ResBlock(ngf * 16, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 64x64
-            ResBlock(ngf * 8, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 128x128
-            ResBlock(ngf * 8, ngf * 4),
-            nn.Upsample(scale_factor=2),  # 256x256
-            ResBlock(ngf * 4, ngf * 2),
-            nn.Upsample(scale_factor=2),  # 512x512
-            ResBlock(ngf * 2, ngf),
-        )
+        # Upsampling layers
+        self.layers = nn.ModuleList()
+        current_ngf = ngf * 8
+        current_resolution = 4
+        while current_resolution < max_resolution:
+            next_ngf = current_ngf // 2
+            self.layers.append(nn.Sequential(
+                ResBlock(current_ngf, next_ngf),
+                nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False)
+            ))
+            current_ngf = next_ngf
+            current_resolution *= 2
         
-        self.output = nn.Sequential(
-            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
-            nn.Tanh()
-        )
+        # We'll create the final conv layer in the forward pass
+        self.tanh = nn.Tanh()
+    
+    def forward(self, x, target_resolution):
+        # print(f"Generator input shape: {x.shape}")
         
-    def forward(self, x):
+        # Initial upsampling
         x = self.initial(x.view(x.size(0), -1, 1, 1))
-        x = self.resblocks(x)
-        return self.output(x)
+        # print(f"After initial upsampling: {x.shape}")
+        
+        # Apply upsampling layers
+        for i, layer in enumerate(self.layers):
+            x = layer(x)
+            # print(f"After layer {i+1}: {x.shape}")
+            if x.size(-1) >= target_resolution:
+                break
+        
+        # Ensure correct output size
+        if x.size(-1) != target_resolution:
+            x = F.interpolate(x, size=(target_resolution, target_resolution), mode='bilinear', align_corners=False)
+        
+        # print(f"Before final conv: {x.shape}")
+        
+        # Create and apply the final convolution layer
+        final_conv = nn.Conv2d(x.size(1), 3, kernel_size=3, padding=1, bias=False).to(x.device)
+        x = final_conv(x)
+        x = self.tanh(x)
+        
+        # print(f"Generator output shape: {x.shape}")
+        
+        return x
 
+    def __repr__(self):
+        return f"IRFDGeneratorResBlocks(input_dim={self.input_dim}, ngf={self.ngf}, max_resolution={self.max_resolution})"
+
+        
 class IRFD(nn.Module):
-    def __init__(self, initial_resolution=64):
+    def __init__(self, input_dim=2048, ngf=64, max_resolution=512):
         super(IRFD, self).__init__()
-        self.current_resolution = initial_resolution
         
         # Encoders
         self.Ei = self._create_encoder()  # Identity encoder
@@ -89,8 +105,7 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
         # Generator
-        input_dim = 3 * 2048  # Assuming each encoder outputs a 2048-dim feature
-        self.Gd = IRFDGeneratorResBlocks(input_dim=input_dim, ngf=64)
+        self.Gd = IRFDGeneratorResBlocks(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
@@ -99,6 +114,8 @@ class IRFD(nn.Module):
         return nn.Sequential(*list(encoder.children())[:-1])
     
     def forward(self, x_s, x_t):
+        # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
+        
         # Encode source and target images
         fi_s = self.Ei(x_s)
         fe_s = self.Ee(x_s)
@@ -107,6 +124,8 @@ class IRFD(nn.Module):
         fi_t = self.Ei(x_t)
         fe_t = self.Ee(x_t)
         fp_t = self.Ep(x_t)
+        
+        # print(f"Encoder outputs - fi_s: {fi_s.shape}, fe_s: {fe_s.shape}, fp_s: {fp_s.shape}")
         
         # Randomly swap one type of feature
         swap_type = torch.randint(0, 3, (1,)).item()
@@ -121,17 +140,14 @@ class IRFD(nn.Module):
         gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
         gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
         
-        # we randomly swap one type of facial feature code and concatenate two sets
-        # of facial feature information extracted from 𝑆 and 𝑇 , which
-        # are then fed into the IRFD generator 𝐺𝑑 [ 18] to generate two
-        # fake facial images, denoted as 𝐼𝑑 
-        # Generate reconstructed images
-        x_s_recon = self.Gd(gen_input_s)
-        x_t_recon = self.Gd(gen_input_t)
+        # print(f"Generator input - gen_input_s: {gen_input_s.shape}")
         
-        # Resize reconstructed images to match input size
-        x_s_recon = F.interpolate(x_s_recon, size=x_s.shape[2:], mode='bilinear', align_corners=False)
-        x_t_recon = F.interpolate(x_t_recon, size=x_t.shape[2:], mode='bilinear', align_corners=False)
+        # Generate reconstructed images
+        target_resolution = x_s.shape[2]  # Assuming square images
+        x_s_recon = self.Gd(gen_input_s, target_resolution)
+        x_t_recon = self.Gd(gen_input_t, target_resolution)
+        
+        # print(f"Reconstructed images - x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
@@ -139,34 +155,8 @@ class IRFD(nn.Module):
       
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
-    def adjust_for_resolution(self, new_resolution):
-        if new_resolution == self.current_resolution:
-            return
-
-        print(f"Adjusting model for resolution: {new_resolution}x{new_resolution}")
-
-        # Adjust the initial convolutional layer of each encoder
-        for encoder in [self.Ei, self.Ee, self.Ep]:
-            if new_resolution > self.current_resolution:
-                new_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
-                new_conv1.weight.data = F.interpolate(encoder[0].weight.data, scale_factor=new_resolution/self.current_resolution, mode='bilinear', align_corners=False)
-                encoder[0] = new_conv1
-
-        # Adjust the generator
-        self.Gd.adjust_for_resolution(new_resolution)
-
-        self.current_resolution = new_resolution
-
-    def encode(self, x):
-        fi = self.Ei(x)
-        fe = self.Ee(x)
-        fp = self.Ep(x)
-        return fi, fe, fp
-
-    def decode(self, fi, fe, fp):
-        gen_input = torch.cat([fi, fe, fp], dim=1).squeeze(-1).squeeze(-1)
-        return self.Gd(gen_input)
-    
+    def __repr__(self):
+        return "IRFD(input_dim=2048, ngf=64, max_resolution=512)"
 
 class IRFDLoss(nn.Module):
     def __init__(self, alpha=0.1):
@@ -212,216 +202,3 @@ class IRFDLoss(nn.Module):
         return total_loss, l_identity, l_cls, l_pose, l_emotion, l_self
 
 
-
-
-class ResBlock(nn.Module):
-    def __init__(self, in_channels, out_channels):
-        super(ResBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(out_channels)
-        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(out_channels)
-        self.relu = nn.ReLU(inplace=True)
-        self.downsample = nn.Sequential(
-            nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
-            nn.BatchNorm2d(out_channels)
-        ) if in_channels != out_channels else None
-
-    def forward(self, x):
-        identity = x
-        out = self.conv1(x)
-        out = self.bn1(out)
-        out = self.relu(out)
-        out = self.conv2(out)
-        out = self.bn2(out)
-        if self.downsample is not None:
-            identity = self.downsample(x)
-        out += identity
-        out = self.relu(out)
-        return out
-
-class IRFDGeneratorResBlocks(nn.Module):
-    def __init__(self, input_dim, ngf=64):
-        super(IRFDGeneratorResBlocks, self).__init__()
-        
-        self.initial = nn.Sequential(
-            nn.ConvTranspose2d(input_dim, ngf * 32, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 32),
-            nn.ReLU(True)
-        )
-        
-        self.resblocks = nn.Sequential(
-            ResBlock(ngf * 32, ngf * 32),
-            nn.Upsample(scale_factor=2),  # 8x8
-            ResBlock(ngf * 32, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 16x16
-            ResBlock(ngf * 16, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 32x32
-            ResBlock(ngf * 16, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 64x64
-            ResBlock(ngf * 8, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 128x128
-            ResBlock(ngf * 8, ngf * 4),
-            nn.Upsample(scale_factor=2),  # 256x256
-            ResBlock(ngf * 4, ngf * 2),
-            nn.Upsample(scale_factor=2),  # 512x512
-            ResBlock(ngf * 2, ngf),
-        )
-        
-        self.output = nn.Sequential(
-            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
-            nn.Tanh()
-        )
-        
-    def forward(self, x):
-        x = self.initial(x.view(x.size(0), -1, 1, 1))
-        x = self.resblocks(x)
-        return self.output(x)
-
-
-
-
-class IRFDGenerator512(nn.Module):
-    def __init__(self, input_dim, ngf=64):
-        super(IRFDGenerator512, self).__init__()
-        
-        self.main = nn.Sequential(
-            # Input is the concatenated identity, emotion and pose embeddings
-            # input_dim = 3 * 2048 = 6144 (assuming ResNet-50 encoders)
-            nn.ConvTranspose2d(input_dim, ngf * 64, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 64),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 64, ngf * 32, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 32),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 32, ngf * 16, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 16),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 16, ngf * 8, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 8),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 8, ngf * 4, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 4),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 4, ngf * 2, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf * 2),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf * 2, ngf, 4, 2, 1, bias=False),
-            nn.BatchNorm2d(ngf),
-            nn.ReLU(True),
-            
-            nn.ConvTranspose2d(ngf, 3, 4, 2, 1, bias=False),
-            nn.Tanh()
-            
-            # Output is a reconstructed image of shape (3, 512, 512)
-        )
-        
-        # Initialization scheme
-        # This specific initialization scheme (normal distribution with the chosen mean and standard deviation) is based on the recommendations from the DCGAN paper (Radford et al., 2016), which has been found to work well for various GAN architectures.
-        for m in self.modules():
-            if isinstance(m, nn.ConvTranspose2d):
-                nn.init.normal_(m.weight.data, 0.0, 0.02)
-            elif isinstance(m, nn.BatchNorm2d):
-                nn.init.normal_(m.weight.data, 1.0, 0.02)
-                nn.init.constant_(m.bias.data, 0)
-                
-    def forward(self, x):
-        return self.main(x.view(x.size(0), -1, 1, 1))
-
-
-
-class IRFDGenerator(nn.Module):
-    def __init__(self, input_dim, ngf=64):
-        super(IRFDGenerator, self).__init__()
-        
-        self.initial = nn.Sequential(
-            nn.ConvTranspose2d(input_dim, ngf * 32, 4, 1, 0, bias=False),
-            nn.BatchNorm2d(ngf * 32),
-            nn.ReLU(True)
-        )
-        
-        self.resblocks = nn.Sequential(
-            ResBlock(ngf * 32, ngf * 32),
-            nn.Upsample(scale_factor=2),  # 8x8
-            ResBlock(ngf * 32, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 16x16
-            ResBlock(ngf * 16, ngf * 16),
-            nn.Upsample(scale_factor=2),  # 32x32
-            ResBlock(ngf * 16, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 64x64
-            ResBlock(ngf * 8, ngf * 8),
-            nn.Upsample(scale_factor=2),  # 128x128
-            ResBlock(ngf * 8, ngf * 4),
-            nn.Upsample(scale_factor=2),  # 256x256
-            ResBlock(ngf * 4, ngf * 2),
-            nn.Upsample(scale_factor=2),  # 512x512
-            ResBlock(ngf * 2, ngf),
-            nn.Upsample(scale_factor=2),  # 1024x1024
-        )
-        
-        self.output = nn.Sequential(
-            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
-            nn.Tanh()        )
-        
-    def forward(self, x):
-        x = self.initial(x.view(x.size(0), -1, 1, 1))
-        x = self.resblocks(x)
-        return self.output(x)
-
-
-
-class AudioEncoder(nn.Module):
-    def __init__(self):
-        super(AudioEncoder, self).__init__()
-        self.wav2vec = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base")
-    
-    def forward(self, audio):
-        return self.wav2vec(audio).last_hidden_state
-
-class EditingModule(nn.Module):
-    def __init__(self):
-        super(EditingModule, self).__init__()
-        # Implement the editing module as described in the paper
-        # This should combine facial features with audio features
-    
-    def forward(self, facial_features, audio_features):
-        # Combine and process features
-        pass
-
-class TalkingHeadGenerator(nn.Module):
-    def __init__(self):
-        super(TalkingHeadGenerator, self).__init__()
-        # Implement the global generator Gg as described in the paper
-    
-    def forward(self, edited_features):
-        # Generate the final talking head video
-        pass
-
-class SPEAK(nn.Module):
-    def __init__(self):
-        super(SPEAK, self).__init__()
-        self.irfd = IRFD()
-        self.audio_encoder = AudioEncoder()
-        self.editing_module = EditingModule()
-        self.talking_head_generator = TalkingHeadGenerator()
-    
-    def forward(self, identity_image, emotion_video, pose_video, audio):
-        # Implement the full SPEAK pipeline
-        pass
-
-# Additional loss functions
-class PerceptualLoss(nn.Module):
-    def __init__(self):
-        super(PerceptualLoss, self).__init__()
-        # Implement perceptual loss using a pre-trained VGG network
-
-class GANLoss(nn.Module):
-    def __init__(self):
-        super(GANLoss, self).__init__()
-        # Implement GAN loss

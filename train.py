@@ -37,51 +37,6 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
     num_sets = min(16, x_s.size(0))
     save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}_resolution_{resolution}.png"), nrow=4)
 
-def create_curriculum_dataloader(config, base_dataset, resolution, difficulty):
-    curriculum_dataset = CurriculumCelebADataset(base_dataset, resolution, difficulty)
-    return torch.utils.data.DataLoader(
-        curriculum_dataset,
-        batch_size=config.training.train_batch_size,
-        shuffle=True,
-        num_workers=config.training.num_workers,
-        pin_memory=True
-    )
-
-class CurriculumCelebADataset(ProgressiveCelebADataset):
-    def __init__(self, base_dataset, resolution, difficulty):
-        super().__init__(base_dataset, resolution)
-        self.difficulty = difficulty
-        
-    def __getitem__(self, idx):
-        item = super().__getitem__(idx)
-        # Apply difficulty-based transformations or filtering
-        # For example, easier samples might have less extreme pose or emotion changes
-        if self.difficulty < 0.5:
-            # Easier samples: less extreme transformations
-            item['source_image'] = self.apply_easy_transform(item['source_image'])
-            item['target_image'] = self.apply_easy_transform(item['target_image'])
-        else:
-            # Harder samples: more extreme transformations
-            item['source_image'] = self.apply_hard_transform(item['source_image'])
-            item['target_image'] = self.apply_hard_transform(item['target_image'])
-        return item
-    
-    def apply_easy_transform(self, image):
-        # Apply mild augmentations
-        transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.3),
-            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
-        ])
-        return transform(image)
-    
-    def apply_hard_transform(self, image):
-        # Apply more extreme augmentations
-        transform = transforms.Compose([
-            transforms.RandomHorizontalFlip(p=0.5),
-            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
-            transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
-        ])
-        return transform(image)
 
 def weight_init(m):
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
@@ -102,11 +57,11 @@ def get_warmup_scheduler(optimizer, warmup_steps, after_scheduler):
         return after_scheduler.get_last_lr()[0]
 
     return LambdaLR(optimizer, lambda_lr)
-
 def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, accelerator, writer, criterion, latest_checkpoint=None):
-    resolutions = [64, 128, 256, 512]  # Example resolution progression
+    resolutions = [64, 128, 256, 512]
     epochs_per_resolution = config.training.epochs_per_resolution
-
+    warmup_steps = config.training.warmup_steps
+    
     global_step = 0
     start_resolution_index = 0
     start_epoch = 0
@@ -126,16 +81,25 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
 
-    # Move model to the correct device
-    model = accelerator.prepare(model)
+    # Initialize SWA
+    swa_model = AveragedModel(model)
+    swa_scheduler = SWALR(optimizer, swa_lr=0.05)
+    swa_start = epochs_per_resolution // 2
+
+    # Weight initialization
+    model.apply(weight_init)
+
+    # Prepare model, optimizer, and scheduler
+    model, optimizer = accelerator.prepare(model, optimizer)
 
     for resolution_index in range(start_resolution_index, len(resolutions)):
         resolution = resolutions[resolution_index]
         print(f"Training at resolution {resolution}x{resolution}")
-           # Add this line to adjust the model for the new resolution
-        model.adjust_for_resolution(resolution)
         
         dataloader = create_progressive_dataloader(config, base_dataset, resolution)
+        
+        # Warm-up scheduler
+        warmup_scheduler = get_warmup_scheduler(optimizer, warmup_steps, scheduler)
         
         for epoch in range(start_epoch, epochs_per_resolution):
             model.train()
@@ -147,14 +111,22 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                 with accelerator.accumulate(model):
                     x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
-                    
+                    # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
+
                     outputs = model(x_s, x_t)
                     loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                    
+                    # L2 regularization
+                    l2_reg = torch.tensor(0., device=accelerator.device)
+                    for param in model.parameters():
+                        l2_reg += torch.norm(param)
+                    loss += config.training.l2_lambda * l2_reg
 
                     accelerator.backward(loss)
                     
+                    # Gradient clipping
                     if config.training.grad_clip:
-                        accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
+                        clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -163,6 +135,11 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     progress_bar.update(1)
                     global_step += 1
                     total_loss += loss.detach().item()
+
+                    if global_step < warmup_steps:
+                        warmup_scheduler.step()
+                    else:
+                        scheduler.step()
 
                     if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
                         log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution)
@@ -177,8 +154,12 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
             val_loss = validate(model, create_progressive_dataloader(config, base_dataset, resolution), criterion, accelerator)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
-            # Learning rate scheduling
-            scheduler.step(val_loss)
+            # SWA update
+            if epoch > swa_start:
+                swa_model.update_parameters(model)
+                swa_scheduler.step()
+            else:
+                scheduler.step(val_loss)
 
             # Save checkpoint
             if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
@@ -196,13 +177,15 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         # Reset start_epoch for the next resolution
         start_epoch = 0
 
-        # Optionally, you can fine-tune the model weights for the new resolution
-        if resolution < resolutions[-1]:
-            model.adjust_for_resolution(resolution)
+    # Final SWA update
+    torch.optim.swa_utils.update_bn(dataloader, swa_model)
+    
+    # Save the final SWA model
+    if accelerator.is_main_process:
+        swa_save_path = os.path.join(config.training.output_dir, "swa_model")
+        accelerator.save(swa_model.state_dict(), swa_save_path)
 
     accelerator.end_training()
-
-
 
 
 
