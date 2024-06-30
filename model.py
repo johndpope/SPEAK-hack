@@ -7,6 +7,7 @@ from torchvision import models
 import lpips
 
 
+
 class SimpleGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64, max_resolution=256):
         super(SimpleGenerator, self).__init__()
@@ -14,8 +15,6 @@ class SimpleGenerator(nn.Module):
         self.input_dim = input_dim
         self.ngf = ngf
         self.max_resolution = max_resolution
-        
-        # print(f"Initializing SimpleGenerator with input_dim={input_dim}, ngf={ngf}, max_resolution={max_resolution}")
         
         self.initial = nn.Sequential(
             nn.ConvTranspose2d(input_dim, ngf * 8, 4, 1, 0, bias=False),
@@ -35,42 +34,31 @@ class SimpleGenerator(nn.Module):
             ))
             current_ngf = next_ngf
             current_size *= 2
-            # print(f"Added layer: input_channels={current_ngf*2}, output_channels={current_ngf}, size={current_size}")
         
-        self.final = None  # We'll create this in the forward pass
+        self.final = None
     
     def forward(self, x, target_resolution):
-        # print(f"\nSimpleGenerator forward pass:")
-        # print(f"Input shape: {x.shape}, target_resolution: {target_resolution}")
-        
         x = self.initial(x.view(x.size(0), -1, 1, 1))
-        # print(f"After initial layer: {x.shape}")
-        
+        assert not torch.isnan(x).any(), "NaN detected after initial layer"
+
         for i, layer in enumerate(self.layers):
             x = layer(x)
-            # print(f"After layer {i+1}: {x.shape}")
+            assert not torch.isnan(x).any(), f"NaN detected after layer {i+1}"
             if x.size(-1) >= target_resolution:
-                # print(f"Reached or exceeded target resolution. Stopping at layer {i+1}")
                 break
         
-        # Ensure correct output size
         if x.size(-1) != target_resolution:
-            # print(f"Resizing from {x.shape[2:]} to {target_resolution}")
             x = F.interpolate(x, size=(target_resolution, target_resolution), mode='bilinear', align_corners=False)
-            # print(f"After resizing: {x.shape}")
-        
-        # Create the final layer dynamically based on the current number of channels
+            assert not torch.isnan(x).any(), "NaN detected after resizing"
+
         if self.final is None or self.final[0].in_channels != x.size(1):
-            # print(f"Creating new final layer. Input channels: {x.size(1)}")
             self.final = nn.Sequential(
                 nn.Conv2d(x.size(1), 3, 3, 1, 1),
                 nn.Tanh()
             ).to(x.device)
-        # else:
-            # print(f"Using existing final layer. Input channels: {self.final[0].in_channels}")
         
         output = self.final(x)
-        # print(f"Final output shape: {output.shape}")
+        assert not torch.isnan(output).any(), "NaN detected in final output"
         
         return output
 
@@ -232,6 +220,24 @@ class IRFDLoss(nn.Module):
         self.lpips_loss = lpips.LPIPS(net='vgg')  # You can also use 'vgg' instead of 'alex'
     
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
+        # Assertions to check for NaNs
+        assert not torch.isnan(x_s).any(), "NaN detected in x_s"
+        assert not torch.isnan(x_t).any(), "NaN detected in x_t"
+        assert not torch.isnan(x_s_recon).any(), "NaN detected in x_s_recon"
+        assert not torch.isnan(x_t_recon).any(), "NaN detected in x_t_recon"
+        assert not torch.isnan(fi_s).any(), "NaN detected in fi_s"
+        assert not torch.isnan(fe_s).any(), "NaN detected in fe_s"
+        assert not torch.isnan(fp_s).any(), "NaN detected in fp_s"
+        assert not torch.isnan(fi_t).any(), "NaN detected in fi_t"
+        assert not torch.isnan(fe_t).any(), "NaN detected in fe_t"
+        assert not torch.isnan(fp_t).any(), "NaN detected in fp_t"
+        assert not torch.isnan(emotion_pred_s).any(), "NaN detected in emotion_pred_s"
+        assert not torch.isnan(emotion_pred_t).any(), "NaN detected in emotion_pred_t"
+        assert not torch.isnan(emotion_labels_s).any(), "NaN detected in emotion_labels_s"
+        assert not torch.isnan(emotion_labels_t).any(), "NaN detected in emotion_labels_t"
+
+
+
         # Ensure all images have the same size
         x_s = F.interpolate(x_s, size=x_s_recon.shape[2:], mode='bilinear', align_corners=False)
         x_t = F.interpolate(x_t, size=x_t_recon.shape[2:], mode='bilinear', align_corners=False)

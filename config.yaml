@@ -28,7 +28,7 @@ training:
   P_mean: -0.4
   P_std: 1.0
   sigma_data: 0.5
-  num_workers: 1
+  num_workers: 4
   val_batch_size: 32
   early_stopping_patience: 10
   grad_clip: true

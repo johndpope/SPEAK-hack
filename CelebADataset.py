@@ -9,6 +9,68 @@ import io
 import numpy as np
 import random
 
+
+import os
+
+
+class AffectNetDataset(Dataset):
+    def __init__(self, root_dir, preprocess, remove_background=False, use_greenscreen=False):
+        self.root_dir = os.path.join(root_dir)
+        self.preprocess = preprocess
+        self.remove_background = remove_background
+        self.use_greenscreen = use_greenscreen
+        self.fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
+        
+        # Define emotion class to index mapping
+        self.emotion_class_to_idx = {str(i): i for i in range(8)}
+        
+        # Load image paths and their corresponding emotion labels
+        self.image_paths = []
+        self.emotion_labels = []
+        for emotion_label in range(8):
+            emotion_dir = os.path.join(self.root_dir, str(emotion_label))
+            for img_file in os.listdir(emotion_dir):
+                if img_file.endswith(('.png', '.jpg', '.jpeg')):
+                    self.image_paths.append(os.path.join(emotion_dir, img_file))
+                    self.emotion_labels.append(emotion_label)
+        
+    def __len__(self):
+        return len(self.image_paths) // 2  # We're processing pairs of images
+
+    def remove_bg(self, image):
+        # Dummy implementation for background removal. Implement as needed.
+        return image
+
+    def __getitem__(self, idx):
+        # Get a pair of images
+        source_idx = idx * 2
+        target_idx = source_idx + 1
+
+        # Process source image
+        source_image_path = self.image_paths[source_idx]
+        source_image = Image.open(source_image_path).convert("RGB")
+        if self.remove_background:
+            source_image = self.remove_bg(source_image)
+        source_image = self.preprocess(source_image)
+        source_emotion_idx = self.emotion_labels[source_idx]
+
+        # Process target image
+        target_image_path = self.image_paths[target_idx]
+        target_image = Image.open(target_image_path).convert("RGB")
+        if self.remove_background:
+            target_image = self.remove_bg(target_image)
+        target_image = self.preprocess(target_image)
+        target_emotion_idx = self.emotion_labels[target_idx]
+
+        return {
+            "source_image": source_image,
+            "target_image": target_image,
+            "emotion_labels_s": torch.tensor(source_emotion_idx, dtype=torch.long),
+            "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
+        }
+
+
+
 class CelebADataset(Dataset):
     def __init__(self, dataset_name, split, preprocess, remove_background=False, use_greenscreen=False):
         self.dataset = load_dataset(dataset_name, split=split)
@@ -73,7 +135,7 @@ class CelebADataset(Dataset):
             "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
         }
 
-class ProgressiveCelebADataset(Dataset):
+class ProgressiveDataset(Dataset):
     def __init__(self, base_dataset, current_resolution):
         self.base_dataset = base_dataset
         self.current_resolution = current_resolution
