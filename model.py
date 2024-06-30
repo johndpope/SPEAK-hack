@@ -115,20 +115,11 @@ class IRFD(nn.Module):
         if x_s.min() < -1 or x_s.max() > 1 or x_t.min() < -1 or x_t.max() > 1:
             print(f"Input range warning: x_s min={x_s.min():.2f}, max={x_s.max():.2f}, x_t min={x_t.min():.2f}, max={x_t.max():.2f}")
     
-        # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
-        # print(f"Input min/max/mean - x_s: {x_s.min():.4f}/{x_s.max():.4f}/{x_s.mean():.4f}, x_t: {x_t.min():.4f}/{x_t.max():.4f}/{x_t.mean():.4f}")
-        
-        # Encode source and target images
-        # self.Ei.eval()
-        # self.Ee.eval()
-        # self.Ep.eval()
+
 
         fi_s = self.Ei(x_s)
         fe_s = self.Ee(x_s)
         fp_s = self.Ep(x_s)
-        # self.Ei.train()
-        # self.Ee.train()
-        # self.Ep.train()
         fi_t = self.Ei(x_t)
         fe_t = self.Ee(x_t)
         fp_t = self.Ep(x_t)
@@ -138,19 +129,19 @@ class IRFD(nn.Module):
                 if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
                     print(f"NaN or Inf gradient detected in {name}")
 
-        print(f"fi_s shape: {fi_s.shape}")
-        print(f"fi_s statistics:")
-        print(f"  Min: {fi_s.min().item():.4f}")
-        print(f"  Max: {fi_s.max().item():.4f}")
-        print(f"  Mean: {fi_s.mean().item():.4f}")
-        print(f"  Std: {fi_s.std().item():.4f}")
+        # print(f"fi_s shape: {fi_s.shape}")
+        # print(f"fi_s statistics:")
+        # print(f"  Min: {fi_s.min().item():.4f}")
+        # print(f"  Max: {fi_s.max().item():.4f}")
+        # print(f"  Mean: {fi_s.mean().item():.4f}")
+        # print(f"  Std: {fi_s.std().item():.4f}")
 
-        print(f"fi_t shape: {fi_t.shape}")
-        print(f"fi_t statistics:")
-        print(f"  Min: {fi_t.min().item():.4f}")
-        print(f"  Max: {fi_t.max().item():.4f}")
-        print(f"  Mean: {fi_t.mean().item():.4f}")
-        print(f"  Std: {fi_t.std().item():.4f}")
+        # print(f"fi_t shape: {fi_t.shape}")
+        # print(f"fi_t statistics:")
+        # print(f"  Min: {fi_t.min().item():.4f}")
+        # print(f"  Max: {fi_t.max().item():.4f}")
+        # print(f"  Mean: {fi_t.mean().item():.4f}")
+        # print(f"  Std: {fi_t.std().item():.4f}")
 
 
          # Conditional swapping
@@ -180,13 +171,13 @@ class IRFD(nn.Module):
         x_s_recon = self.Gd(gen_input_s, target_resolution)
         x_t_recon = self.Gd(gen_input_t, target_resolution)
         
-        print("Feature extraction successful!")
-        print(f"Feature shape: {x_s_recon.shape}")
-        print(f"Feature statistics:")
-        print(f"  Min: {x_s_recon.min().item():.4f}")
-        print(f"  Max: {x_s_recon.max().item():.4f}")
-        print(f"  Mean: {x_s_recon.mean().item():.4f}")
-        print(f"  Std: {x_s_recon.std().item():.4f}")
+        # print("Feature extraction successful!")
+        # print(f"Feature shape: {x_s_recon.shape}")
+        # print(f"Feature statistics:")
+        # print(f"  Min: {x_s_recon.min().item():.4f}")
+        # print(f"  Max: {x_s_recon.max().item():.4f}")
+        # print(f"  Mean: {x_s_recon.mean().item():.4f}")
+        # print(f"  Std: {x_s_recon.std().item():.4f}")
 
         # print(f"Reconstructed images - x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
         # print(f"Reconstructed min/max/mean - x_s_recon: {x_s_recon.min():.4f}/{x_s_recon.max():.4f}/{x_s_recon.mean():.4f}")
