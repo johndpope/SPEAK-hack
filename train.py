@@ -58,7 +58,7 @@ def get_warmup_scheduler(optimizer, warmup_steps, after_scheduler):
 
     return LambdaLR(optimizer, lambda_lr)
 def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, accelerator, writer, criterion, latest_checkpoint=None):
-    resolutions = [64, 128, 256, 512]
+    resolutions = [64, 128, 256]
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
     
@@ -109,7 +109,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
                     outputs = model(x_s, x_t)
-                    loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                    loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
                     
                     accelerator.backward(loss)
                     
@@ -131,7 +131,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                         scheduler.step(total_loss / (step + 1))
 
                     if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
-                        log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution)
+                        log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips,global_step, resolution)
 
                     if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
                         save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, resolution, config.training.output_dir)
@@ -202,14 +202,14 @@ def create_progressive_dataloader(config, base_dataset, resolution, is_validatio
         pin_memory=True
     )
 
-def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution):
+def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips, global_step, resolution):
     writer.add_scalar(f'Loss/Total/Resolution_{resolution}', loss.item(), global_step)
     writer.add_scalar(f'Loss/Identity/Resolution_{resolution}', l_identity.item(), global_step)
     writer.add_scalar(f'Loss/Classification/Resolution_{resolution}', l_cls.item(), global_step)
     writer.add_scalar(f'Loss/Pose/Resolution_{resolution}', l_pose.item(), global_step)
     writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion.item(), global_step)
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
-
+    writer.add_scalar(f'Loss/LPIPS/Resolution_{resolution}', l_pips.item(), global_step)
 
 def train_epoch(model, dataloader, optimizer, criterion, accelerator, config, writer, global_step):
     model.train()
@@ -222,7 +222,7 @@ def train_epoch(model, dataloader, optimizer, criterion, accelerator, config, wr
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
 
             outputs = model(x_s, x_t)
-            loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+            loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
 
             accelerator.backward(loss)
             
@@ -238,7 +238,7 @@ def train_epoch(model, dataloader, optimizer, criterion, accelerator, config, wr
             total_loss += loss.detach().item()
 
             if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
-                log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step,512)
+                log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips, global_step,256)
 
             if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
                 save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, config.training.output_dir)
@@ -271,7 +271,7 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((512, 512)),  # Start with the highest resolution
+        transforms.Resize((256, 256)),  # Start with the highest resolution
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
