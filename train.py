@@ -208,17 +208,23 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                     x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
-                    outputs = model(x_s, x_t)
-                    loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                    if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
-                        raise ValueError("NaN detected in loss components")
-                    accelerator.backward(loss)
-                    
-                    if config.training.grad_clip:
-                        accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
-                    
-                    optimizer.step()
-                    optimizer.zero_grad()
+                    try:
+                        outputs = model(x_s, x_t)
+                        loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+                        if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
+                            raise ValueError("NaN detected in loss components")
+                        accelerator.backward(loss)
+                        
+                        if config.training.grad_clip:
+                            accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
+                        
+                        optimizer.step()
+                        optimizer.zero_grad()
+                    except Exception as e:
+                        print("error:",e)
+                        save_image(x_s, os.path.join(config.training.output_dir, "x_s_failed.png"))
+                        save_image(x_t, os.path.join(config.training.output_dir, "x_t_failed.png"))
+                        raise ValueError("NaN in x_s - check x_s_failed.png") 
 
                 if accelerator.sync_gradients:
                     progress_bar.update(1)

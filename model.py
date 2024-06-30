@@ -7,6 +7,51 @@ from torchvision import models
 import lpips
 
 
+FEATURE_SIZE_AVG_POOL = 2 # use 2 - not 4. https://github.com/johndpope/MegaPortrait-hack/issues/23
+FEATURE_SIZE = (2, 2) 
+
+
+# we need custom resnet blocks - so use the ResNet50  es.shape: torch.Size([1, 512, 1, 1])
+# n.b. emoportraits reduced this from 512 -> 128 dim - these are feature maps / identity fingerprint of image 
+class CustomResNet50(nn.Module):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        resnet = models.resnet50(*args, **kwargs)
+        self.conv1 = resnet.conv1
+        self.bn1 = resnet.bn1
+      #  self.relu = resnet.relu
+        self.maxpool = resnet.maxpool
+        self.layer1 = resnet.layer1
+        self.layer2 = resnet.layer2
+        self.layer3 = resnet.layer3
+        # Remove the last residual block (layer4)
+        # self.layer4 = resnet.layer4
+        
+        # Add an adaptive average pooling layer
+        self.adaptive_avg_pool = nn.AdaptiveAvgPool2d(FEATURE_SIZE_AVG_POOL)
+        
+        # Add a 1x1 convolutional layer to reduce the number of channels to 512
+        self.conv_reduce = nn.Conv2d(1024, 512, kernel_size=1)
+
+    def forward(self, x):
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = F.relu(x)
+        x = self.maxpool(x)
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        # Remove the forward pass through layer4
+        # x = self.layer4(x)
+        
+        # Apply adaptive average pooling
+        x = self.adaptive_avg_pool(x)
+        
+        # Apply the 1x1 convolutional layer to reduce the number of channels
+        x = self.conv_reduce(x)
+        
+        return x
+
 
 class SimpleGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64, max_resolution=256):
@@ -74,18 +119,15 @@ class IRFD(nn.Module):
         
         self.enable_swapping = True
         # Encoders
-        self.Ei = self._create_encoder()  # Identity encoder
-        self.Ee = self._create_encoder()  # Emotion encoder
-        self.Ep = self._create_encoder()  # Pose encoder
+        self.Ei = CustomResNet50()  # Identity encoder
+        self.Ee = CustomResNet50()  # Emotion encoder
+        self.Ep = CustomResNet50()  # Pose encoder
         
         # Generator
         self.Gd = SimpleGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
-    def _create_encoder(self):
-        encoder = resnet50(pretrained=True)
-        return nn.Sequential(*list(encoder.children())[:-1])
     
     def forward(self, x_s, x_t):
         # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
