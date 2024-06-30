@@ -78,11 +78,13 @@ class SimpleGenerator(nn.Module):
         return f"SimpleGenerator(input_dim={self.input_dim}, ngf={self.ngf}, max_resolution={self.max_resolution})"
 
 
-        
+
+
 class IRFD(nn.Module):
     def __init__(self, input_dim=2048, ngf=64, max_resolution=256):
         super(IRFD, self).__init__()
         
+        self.enable_swapping = True
         # Encoders
         self.Ei = self._create_encoder()  # Identity encoder
         self.Ee = self._create_encoder()  # Emotion encoder
@@ -99,6 +101,7 @@ class IRFD(nn.Module):
     
     def forward(self, x_s, x_t):
         # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
+        # print(f"Input min/max/mean - x_s: {x_s.min():.4f}/{x_s.max():.4f}/{x_s.mean():.4f}, x_t: {x_t.min():.4f}/{x_t.max():.4f}/{x_t.mean():.4f}")
         
         # Encode source and target images
         fi_s = self.Ei(x_s)
@@ -110,20 +113,27 @@ class IRFD(nn.Module):
         fp_t = self.Ep(x_t)
         
         
-        # Randomly swap one type of feature
-        swap_type = torch.randint(0, 3, (1,)).item()
-        if swap_type == 0:
-            fi_s, fi_t = fi_t, fi_s
-        elif swap_type == 1:
-            fe_s, fe_t = fe_t, fe_s
-        else:
-            fp_s, fp_t = fp_t, fp_s
-        
+         # Conditional swapping
+        if self.enable_swapping:
+            swap_type = torch.randint(0, 3, (1,)).item()
+            if swap_type == 0:
+                fi_s, fi_t = fi_t, fi_s
+                # print("Swapped identity features")
+            elif swap_type == 1:
+                fe_s, fe_t = fe_t, fe_s
+                # print("Swapped emotion features")
+            else:
+                fp_s, fp_t = fp_t, fp_s
+                # print("Swapped pose features")
+        # else:
+            # print("Swapping disabled")
+
         # Concatenate features for generator input
         gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
         gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
         
         # print(f"Generator input - gen_input_s: {gen_input_s.shape}")
+        # print(f"Generator input min/max/mean - gen_input_s: {gen_input_s.min():.4f}/{gen_input_s.max():.4f}/{gen_input_s.mean():.4f}")
         
         # Generate reconstructed images
         target_resolution = x_s.shape[2]  # Assuming square images
@@ -131,15 +141,20 @@ class IRFD(nn.Module):
         x_t_recon = self.Gd(gen_input_t, target_resolution)
         
         # print(f"Reconstructed images - x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
+        # print(f"Reconstructed min/max/mean - x_s_recon: {x_s_recon.min():.4f}/{x_s_recon.max():.4f}/{x_s_recon.mean():.4f}")
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
         emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
+        
+        # print(f"Emotion predictions - emotion_pred_s: {emotion_pred_s.shape}")
+        # print(f"Emotion pred min/max/mean - emotion_pred_s: {emotion_pred_s.min():.4f}/{emotion_pred_s.max():.4f}/{emotion_pred_s.mean():.4f}")
       
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
     def __repr__(self):
         return "IRFD(input_dim=2048, ngf=64, max_resolution=256)"
+
 # class VGGFacePerceptualLoss(nn.Module):
 #     def __init__(self):
 #         super(VGGFacePerceptualLoss, self).__init__()
@@ -208,13 +223,13 @@ class IRFD(nn.Module):
 
 
 class IRFDLoss(nn.Module):
-    def __init__(self, alpha=0.1, lpips_weight=0.1):
+    def __init__(self, alpha=0.1, lpips_weight=1):
         super(IRFDLoss, self).__init__()
         self.alpha = alpha
         self.lpips_weight = lpips_weight
         self.l2_loss = nn.MSELoss()
         self.ce_loss = nn.CrossEntropyLoss()
-        self.lpips_loss = lpips.LPIPS(net='alex')  # You can also use 'vgg' instead of 'alex'
+        self.lpips_loss = lpips.LPIPS(net='vgg')  # You can also use 'vgg' instead of 'alex'
     
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
         # Ensure all images have the same size
@@ -253,5 +268,5 @@ class IRFDLoss(nn.Module):
         
         # Total loss
         total_loss = l_identity + l_cls + l_pose + l_emotion + l_self + self.lpips_weight * l_lpips
-        
+        print("total_loss:",total_loss)
         return total_loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_lpips

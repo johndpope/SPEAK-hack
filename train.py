@@ -17,11 +17,100 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
+from torch.optim.lr_scheduler import _LRScheduler
+import math
 
 # New imports
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.swa_utils import AveragedModel, SWALR
 
+
+# Define regular functions for the scale functions
+def triangular_scale_fn(x):
+    return 1.0
+
+def triangular2_scale_fn(x):
+    return 1 / (2.0 ** (x - 1))
+
+def exp_range_scale_fn(x, gamma):
+    return gamma ** x
+
+
+class CyclicLR(_LRScheduler):
+    def __init__(self, optimizer, base_lr, max_lr, step_size_up=2000, step_size_down=None, mode='triangular', gamma=1., scale_mode='cycle', cycle_momentum=True, base_momentum=0.8, max_momentum=0.9, last_epoch=-1):
+        if not isinstance(base_lr, list) and not isinstance(base_lr, tuple):
+            base_lr = [base_lr] * len(optimizer.param_groups)
+        if not isinstance(max_lr, list) and not isinstance(max_lr, tuple):
+            max_lr = [max_lr] * len(optimizer.param_groups)
+
+        self.optimizer = optimizer
+        self.base_lrs = base_lr
+        self.max_lrs = max_lr
+        self.step_size_up = step_size_up
+        self.step_size_down = step_size_down if step_size_down is not None else step_size_up
+        self.mode = mode
+        self.gamma = gamma
+        self.scale_mode = scale_mode
+        self.cycle_momentum = cycle_momentum
+        self.base_momentums = [base_momentum] * len(optimizer.param_groups)
+        self.max_momentums = [max_momentum] * len(optimizer.param_groups)
+
+        if self.mode == 'triangular':
+            self.scale_fn = triangular_scale_fn
+        elif self.mode == 'triangular2':
+            self.scale_fn = triangular2_scale_fn
+        elif self.mode == 'exp_range':
+            self.scale_fn = lambda x: exp_range_scale_fn(x, self.gamma)
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
+
+        super(CyclicLR, self).__init__(optimizer, last_epoch)
+
+    def get_lr(self):
+        cycle = math.floor(1 + self.last_epoch / (2 * self.step_size_up))
+        x = 1. + self.last_epoch / self.step_size_up - 2 * cycle + 2
+        if x <= 1.:
+            scale_factor = x
+        else:
+            scale_factor = (x - 1) / (self.step_size_down / self.step_size_up)
+
+        lrs = []
+        for base_lr, max_lr in zip(self.base_lrs, self.max_lrs):
+            base_height = (max_lr - base_lr) * scale_factor
+            if self.scale_mode == 'cycle':
+                lr = base_lr + base_height * self.scale_fn(cycle)
+            else:
+                lr = base_lr + base_height * self.scale_fn(self.last_epoch)
+            lrs.append(lr)
+
+        if self.cycle_momentum:
+            momentums = []
+            for base_momentum, max_momentum in zip(self.base_momentums, self.max_momentums):
+                base_height = (max_momentum - base_momentum) * scale_factor
+                if self.scale_mode == 'cycle':
+                    momentum = max_momentum - base_height * self.scale_fn(cycle)
+                else:
+                    momentum = max_momentum - base_height * self.scale_fn(self.last_epoch)
+                momentums.append(momentum)
+            for param_group, momentum in zip(self.optimizer.param_groups, momentums):
+                param_group['momentum'] = momentum
+
+        return lrs
+
+def get_warmup_scheduler(optimizer, warmup_steps, after_scheduler):
+    def lambda_lr(step):
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+        return after_scheduler.get_last_lr()[0]
+
+    return LambdaLR(optimizer, lambda_lr)
+
+def check_for_nans(tensor, tensor_name=""):
+    if torch.isnan(tensor).any():
+        print(f"NaN detected in {tensor_name}")
+        return True
+    return False
+            
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_dir):
     # Denormalize images
     def denorm(x):
@@ -50,14 +139,8 @@ def weight_init(m):
         nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
         nn.init.constant_(m.bias, 0)
 
-def get_warmup_scheduler(optimizer, warmup_steps, after_scheduler):
-    def lambda_lr(step):
-        if step < warmup_steps:
-            return float(step) / float(max(1, warmup_steps))
-        return after_scheduler.get_last_lr()[0]
 
-    return LambdaLR(optimizer, lambda_lr)
-def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, accelerator, writer, criterion, latest_checkpoint=None):
+def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
     resolutions = [64, 128, 256]
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
@@ -76,10 +159,21 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
             start_resolution_index += 1
             start_epoch = 0
         
-        model.load_state_dict(checkpoint['model_state_dict'])
+        # Load model state dict while ignoring unexpected keys
+        model_dict = model.state_dict()
+        checkpoint_model_dict = checkpoint['model_state_dict']
+        # Filter out unexpected keys
+        filtered_dict = {k: v for k, v in checkpoint_model_dict.items() if k in model_dict}
+        # Update model dict and load
+        model_dict.update(filtered_dict)
+        model.load_state_dict(model_dict)
+        
+        # Load optimizer and scheduler state dicts
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        # scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
+        print(f"Loaded {len(filtered_dict)} / {len(checkpoint_model_dict)} keys from checkpoint")
 
     # Weight initialization
     model.apply(weight_init)
@@ -93,7 +187,13 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         
         train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
         val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
-        
+         # Initialize cyclical learning rate scheduler
+        base_lr = config.optimization.learning_rate
+        max_lr = base_lr * 10  # You can adjust this multiplier
+        step_size = epochs_per_resolution * len(train_dataloader) // 2  # Half the epochs per resolution
+        scheduler = CyclicLR(optimizer, base_lr=base_lr, max_lr=max_lr, step_size_up=step_size, mode='triangular2')
+
+
         # Warm-up scheduler
         warmup_scheduler = get_warmup_scheduler(optimizer, warmup_steps, scheduler)
         
@@ -110,7 +210,8 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     
                     outputs = model(x_s, x_t)
                     loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                    
+                    if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
+                        raise ValueError("NaN detected in loss components")
                     accelerator.backward(loss)
                     
                     if config.training.grad_clip:
@@ -284,7 +385,6 @@ def main():
     model = IRFD()
     optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=config.optimization.lr_patience)
 
     # Initialize accelerator
     accelerator = Accelerator(
@@ -310,7 +410,7 @@ def main():
             print(f"Found latest checkpoint: {latest_checkpoint}")
 
     # Run progressive training
-    progressive_train_loop(config, model, base_dataset, optimizer, scheduler, accelerator, writer, criterion, latest_checkpoint)
+    progressive_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint)
 
     # Close the SummaryWriter
     writer.close()
