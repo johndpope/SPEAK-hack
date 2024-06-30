@@ -96,7 +96,8 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         resolution = resolutions[resolution_index]
         print(f"Training at resolution {resolution}x{resolution}")
         
-        dataloader = create_progressive_dataloader(config, base_dataset, resolution)
+        train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
+        val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
         
         # Warm-up scheduler
         warmup_scheduler = get_warmup_scheduler(optimizer, warmup_steps, scheduler)
@@ -104,29 +105,21 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
         for epoch in range(start_epoch, epochs_per_resolution):
             model.train()
             total_loss = 0
-            progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
+            progress_bar = tqdm(total=len(train_dataloader), disable=not accelerator.is_local_main_process)
             progress_bar.set_description(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}")
 
-            for step, batch in enumerate(dataloader):
+            for step, batch in enumerate(train_dataloader):
                 with accelerator.accumulate(model):
                     x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
-                    # print(f"Input shapes - x_s: {x_s.shape}, x_t: {x_t.shape}")
-
+                    
                     outputs = model(x_s, x_t)
                     loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
                     
-                    # L2 regularization
-                    l2_reg = torch.tensor(0., device=accelerator.device)
-                    for param in model.parameters():
-                        l2_reg += torch.norm(param)
-                    loss += config.training.l2_lambda * l2_reg
-
                     accelerator.backward(loss)
                     
-                    # Gradient clipping
                     if config.training.grad_clip:
-                        clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
+                        accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
                     
                     optimizer.step()
                     optimizer.zero_grad()
@@ -139,7 +132,8 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     if global_step < warmup_steps:
                         warmup_scheduler.step()
                     else:
-                        scheduler.step()
+                        # Use the average training loss for the main scheduler during training
+                        scheduler.step(total_loss / (step + 1))
 
                     if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
                         log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution)
@@ -147,20 +141,15 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
                         save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, resolution, config.training.output_dir)
 
-            avg_loss = total_loss / len(dataloader)
+            avg_loss = total_loss / len(train_dataloader)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
 
             # Validation step
-            val_loss = validate(model, create_progressive_dataloader(config, base_dataset, resolution), criterion, accelerator)
+            val_loss = validate(model, val_dataloader, criterion, accelerator)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
-
-            # SWA update
-            if epoch > swa_start:
-                swa_model.update_parameters(model)
-                swa_scheduler.step()
-            else:
-                scheduler.step(val_loss)
+            # Update the scheduler with the validation loss after each epoch
+            scheduler.step(val_loss)
 
             # Save checkpoint
             if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
@@ -172,19 +161,12 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     'optimizer_state_dict': optimizer.state_dict(),
                     'scheduler_state_dict': scheduler.state_dict(),
                     'loss': avg_loss,
+                    'val_loss': val_loss,
                     'global_step': global_step
                 }, save_path)
 
         # Reset start_epoch for the next resolution
         start_epoch = 0
-
-    # Final SWA update
-    torch.optim.swa_utils.update_bn(dataloader, swa_model)
-    
-    # Save the final SWA model
-    if accelerator.is_main_process:
-        swa_save_path = os.path.join(config.training.output_dir, "swa_model")
-        accelerator.save(swa_model.state_dict(), swa_save_path)
 
     accelerator.end_training()
 
