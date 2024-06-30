@@ -34,3 +34,7 @@ Inter-Reconstructed Feature disentanglement(IRFD)
 ```shell
 tensorboard --logdir=./speak/logs
 ```
+
+
+AffectNet
+https://www.kaggle.com/datasets/thienkhonghoc/affectnet?resource=download
