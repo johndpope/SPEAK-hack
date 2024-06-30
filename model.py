@@ -132,6 +132,22 @@ class BasicGenerator64(nn.Module):
 
 
        
+class BasicGenerator256(nn.Module):
+    def __init__(self, input_dim=2048*3):
+        super(BasicGenerator256, self).__init__()
+        self.main = nn.Sequential(
+            nn.Linear(input_dim, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 256 * 256 * 3),  
+            nn.Tanh()  # Normalize output to [-1, 1]
+        )
+
+    def forward(self, x,bla):
+        x = self.main(x)
+        return x.view(-1, 3, 256, 256)  # Reshape to image dimensions
+
 
 class IRFD(nn.Module):
     def __init__(self, input_dim=2048, ngf=64, max_resolution=256):
@@ -147,7 +163,7 @@ class IRFD(nn.Module):
         # self.Gd = SimpleGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
         # self.Gd = AnotherGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
         
-        self.Gd = BasicGenerator64(input_dim=input_dim * 3)
+        self.Gd = BasicGenerator256(input_dim=input_dim * 3)
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 

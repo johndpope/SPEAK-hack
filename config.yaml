@@ -22,7 +22,7 @@ training:
   save_image_steps: 100  # Save reconstructed image every 500 steps
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
-  epochs_per_resolution: 100
+  epochs_per_resolution: 500
   accumulation_steps: 10 # this could be bigger
   eval_steps: 1000
   logging_steps: 100
@@ -45,7 +45,7 @@ training:
 dataset:
   name: "lansinuote/gen.1.celeba"
   split: "train[:80%]"
-  image_size: 64
+  image_size: 256
   val_split: 0.2 # 10% of data for validation
 
 # Optimization configuration

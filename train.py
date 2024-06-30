@@ -143,7 +143,7 @@ def weight_init(m):
         nn.init.constant_(m.bias, 0)
 
 def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
-    resolutions = [64, 128, 256]
+    resolutions = [256]
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
     
