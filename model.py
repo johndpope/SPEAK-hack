@@ -14,11 +14,74 @@ import colored_traceback.auto
 from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 
+class ResBlock(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, bias=False),
+            nn.BatchNorm2d(out_channels)
+        ) if in_channels != out_channels else None
 
+    def forward(self, x):
+        identity = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        if self.downsample is not None:
+            identity = self.downsample(x)
+        out += identity
+        out = self.relu(out)
+        return out
+
+class IRFDGeneratorResBlocks(nn.Module):
+    def __init__(self, input_dim, ngf=64):
+        super(IRFDGeneratorResBlocks, self).__init__()
+        
+        self.initial = nn.Sequential(
+            nn.ConvTranspose2d(input_dim, ngf * 32, 4, 1, 0, bias=False),
+            nn.BatchNorm2d(ngf * 32),
+            nn.ReLU(True)
+        )
+        
+        self.resblocks = nn.Sequential(
+            ResBlock(ngf * 32, ngf * 32),
+            nn.Upsample(scale_factor=2),  # 8x8
+            ResBlock(ngf * 32, ngf * 16),
+            nn.Upsample(scale_factor=2),  # 16x16
+            ResBlock(ngf * 16, ngf * 16),
+            nn.Upsample(scale_factor=2),  # 32x32
+            ResBlock(ngf * 16, ngf * 8),
+            nn.Upsample(scale_factor=2),  # 64x64
+            ResBlock(ngf * 8, ngf * 8),
+            nn.Upsample(scale_factor=2),  # 128x128
+            ResBlock(ngf * 8, ngf * 4),
+            nn.Upsample(scale_factor=2),  # 256x256
+            ResBlock(ngf * 4, ngf * 2),
+            nn.Upsample(scale_factor=2),  # 512x512
+            ResBlock(ngf * 2, ngf),
+        )
+        
+        self.output = nn.Sequential(
+            nn.Conv2d(ngf, 3, kernel_size=3, padding=1, bias=False),
+            nn.Tanh()
+        )
+        
+    def forward(self, x):
+        x = self.initial(x.view(x.size(0), -1, 1, 1))
+        x = self.resblocks(x)
+        return self.output(x)
 
 class IRFD(nn.Module):
-    def __init__(self):
+    def __init__(self, initial_resolution=64):
         super(IRFD, self).__init__()
+        self.current_resolution = initial_resolution
         
         # Encoders
         self.Ei = self._create_encoder()  # Identity encoder
@@ -31,7 +94,6 @@ class IRFD(nn.Module):
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
-        
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
@@ -73,6 +135,34 @@ class IRFD(nn.Module):
       
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
+    def adjust_for_resolution(self, new_resolution):
+        if new_resolution == self.current_resolution:
+            return
+
+        print(f"Adjusting model for resolution: {new_resolution}x{new_resolution}")
+
+        # Adjust the initial convolutional layer of each encoder
+        for encoder in [self.Ei, self.Ee, self.Ep]:
+            if new_resolution > self.current_resolution:
+                new_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+                new_conv1.weight.data = F.interpolate(encoder[0].weight.data, scale_factor=new_resolution/self.current_resolution, mode='bilinear', align_corners=False)
+                encoder[0] = new_conv1
+
+        # Adjust the generator
+        self.Gd.adjust_for_resolution(new_resolution)
+
+        self.current_resolution = new_resolution
+
+    def encode(self, x):
+        fi = self.Ei(x)
+        fe = self.Ee(x)
+        fp = self.Ep(x)
+        return fi, fe, fp
+
+    def decode(self, fi, fe, fp):
+        gen_input = torch.cat([fi, fe, fp], dim=1).squeeze(-1).squeeze(-1)
+        return self.Gd(gen_input)
+    
 
 class IRFDLoss(nn.Module):
     def __init__(self, alpha=0.1):

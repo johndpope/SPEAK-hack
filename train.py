@@ -12,10 +12,15 @@ from datasets import load_dataset
 from model import IRFD, IRFDLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
-from CelebADataset import CelebADataset,ProgressiveCelebADataset
-from torch.optim.lr_scheduler import ReduceLROnPlateau
+from CelebADataset import CelebADataset, ProgressiveCelebADataset
+from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
+import numpy as np
+
+# New imports
+from torch.nn.utils import clip_grad_norm_
+from torch.optim.swa_utils import AveragedModel, SWALR
 
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_dir):
     # Denormalize images
@@ -32,20 +37,71 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
     num_sets = min(16, x_s.size(0))
     save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}_resolution_{resolution}.png"), nrow=4)
 
-
-
-
-
-def create_progressive_dataloader(config, base_dataset, resolution):
-    progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
+def create_curriculum_dataloader(config, base_dataset, resolution, difficulty):
+    curriculum_dataset = CurriculumCelebADataset(base_dataset, resolution, difficulty)
     return torch.utils.data.DataLoader(
-        progressive_dataset,
+        curriculum_dataset,
         batch_size=config.training.train_batch_size,
         shuffle=True,
         num_workers=config.training.num_workers,
         pin_memory=True
     )
 
+class CurriculumCelebADataset(ProgressiveCelebADataset):
+    def __init__(self, base_dataset, resolution, difficulty):
+        super().__init__(base_dataset, resolution)
+        self.difficulty = difficulty
+        
+    def __getitem__(self, idx):
+        item = super().__getitem__(idx)
+        # Apply difficulty-based transformations or filtering
+        # For example, easier samples might have less extreme pose or emotion changes
+        if self.difficulty < 0.5:
+            # Easier samples: less extreme transformations
+            item['source_image'] = self.apply_easy_transform(item['source_image'])
+            item['target_image'] = self.apply_easy_transform(item['target_image'])
+        else:
+            # Harder samples: more extreme transformations
+            item['source_image'] = self.apply_hard_transform(item['source_image'])
+            item['target_image'] = self.apply_hard_transform(item['target_image'])
+        return item
+    
+    def apply_easy_transform(self, image):
+        # Apply mild augmentations
+        transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.3),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.1),
+        ])
+        return transform(image)
+    
+    def apply_hard_transform(self, image):
+        # Apply more extreme augmentations
+        transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(p=0.5),
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.3),
+            transforms.RandomAffine(degrees=15, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+        ])
+        return transform(image)
+
+def weight_init(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:
+            nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.BatchNorm2d):
+        nn.init.constant_(m.weight, 1)
+        nn.init.constant_(m.bias, 0)
+    elif isinstance(m, nn.Linear):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        nn.init.constant_(m.bias, 0)
+
+def get_warmup_scheduler(optimizer, warmup_steps, after_scheduler):
+    def lambda_lr(step):
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+        return after_scheduler.get_last_lr()[0]
+
+    return LambdaLR(optimizer, lambda_lr)
 
 def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, accelerator, writer, criterion, latest_checkpoint=None):
     resolutions = [64, 128, 256, 512]  # Example resolution progression
@@ -76,6 +132,9 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
     for resolution_index in range(start_resolution_index, len(resolutions)):
         resolution = resolutions[resolution_index]
         print(f"Training at resolution {resolution}x{resolution}")
+           # Add this line to adjust the model for the new resolution
+        model.adjust_for_resolution(resolution)
+        
         dataloader = create_progressive_dataloader(config, base_dataset, resolution)
         
         for epoch in range(start_epoch, epochs_per_resolution):
@@ -89,7 +148,6 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
                     x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
                     emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
                     
-
                     outputs = model(x_s, x_t)
                     loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
 
@@ -143,6 +201,22 @@ def progressive_train_loop(config, model, base_dataset, optimizer, scheduler, ac
             model.adjust_for_resolution(resolution)
 
     accelerator.end_training()
+
+
+
+
+
+
+def create_progressive_dataloader(config, base_dataset, resolution):
+    progressive_dataset = ProgressiveCelebADataset(base_dataset, resolution)
+    return torch.utils.data.DataLoader(
+        progressive_dataset,
+        batch_size=config.training.train_batch_size,
+        shuffle=True,
+        num_workers=config.training.num_workers,
+        pin_memory=True
+    )
+
 
 def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, global_step, resolution):
     writer.add_scalar(f'Loss/Total/Resolution_{resolution}', loss.item(), global_step)
@@ -224,7 +298,8 @@ def main():
 
     # Initialize model, optimizer, and scheduler
     model = IRFD()
-    optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate)
+    optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
+
     scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=config.optimization.lr_patience)
 
     # Initialize accelerator
@@ -256,10 +331,9 @@ def main():
     # Close the SummaryWriter
     writer.close()
 
-if __name__ == "__main__":
-    main()
-
 
 
 if __name__ == "__main__":
     main()
+
+

@@ -7,6 +7,7 @@ from rembg import remove
 from PIL import Image
 import io
 import numpy as np
+import random
 
 class CelebADataset(Dataset):
     def __init__(self, dataset_name, split, preprocess, remove_background=False, use_greenscreen=False):
@@ -89,3 +90,33 @@ class ProgressiveCelebADataset(Dataset):
         item["target_image"] = self.resize_transform(item["target_image"].unsqueeze(0)).squeeze(0)
         
         return item
+
+
+
+class CelebADatasetWithAugmentation(Dataset):
+    def __init__(self, base_dataset):
+        self.base_dataset = base_dataset
+        self.transform = transforms.Compose([
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(10),
+            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+            transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),
+            transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
+        ])
+        
+        self.cutout = transforms.RandomErasing(p=0.5, scale=(0.02, 0.1), ratio=(0.3, 3.3), value=0, inplace=False)
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        image, label = self.base_dataset[idx]
+        augmented_image = self.transform(image)
+        
+        # Apply cutout
+        if random.random() < 0.5:
+            augmented_image = self.cutout(augmented_image)
+        
+        return augmented_image, label
