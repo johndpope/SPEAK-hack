@@ -5,27 +5,52 @@ import colored_traceback.auto
 import torch.nn.functional as F
 from torchvision import models
 import lpips
+from torch.utils.checkpoint import checkpoint
 
-
-FEATURE_SIZE_AVG_POOL = 2 # use 2 - not 4. https://github.com/johndpope/MegaPortrait-hack/issues/23
-FEATURE_SIZE = (2, 2) 
 
 
 class CustomResNet50(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, fine_tune_from=0):
         super().__init__()
         resnet = models.resnet50(pretrained=True)
-        self.features = torch.nn.Sequential(*list(resnet.children())[:-2])
+        self.features = torch.nn.Sequential(
+            *[layer for layer in resnet.children()][:-2]
+        )
         self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
+        
+        # Freeze layers before fine_tune_from
+        for i, (name, param) in enumerate(self.features.named_parameters()):
+            if i < fine_tune_from:
+                param.requires_grad = False
+            else:
+                param.requires_grad = True
 
     def forward(self, x):
         x = self.features(x)
         x = self.avgpool(x)
-        x = x.squeeze(-1).squeeze(-1)
-        if torch.isnan(x).any():
-            print("NaN detected in CustomResNet50 output")
-            x = torch.where(torch.isnan(x), torch.zeros_like(x), x)
-        return x
+        return x.squeeze(-1).squeeze(-1)
+    
+# class CustomResNet50(torch.nn.Module):
+#     def __init__(self):
+#         super().__init__()
+#         resnet = models.resnet50(pretrained=True)
+#         self.features = torch.nn.Sequential(
+#             resnet.conv1,
+#             resnet.bn1,
+#             resnet.relu,
+#             resnet.maxpool,
+#             resnet.layer1,
+#             resnet.layer2,
+#             resnet.layer3,
+#             resnet.layer4
+#         )
+#         self.avgpool = torch.nn.AdaptiveAvgPool2d((1, 1))
+
+#     def forward(self, x):
+#         x = self.features(x)
+#         x = self.avgpool(x)
+#         return x.squeeze(-1).squeeze(-1)
+    
 
 class SimpleGenerator(nn.Module):
     def __init__(self, input_dim, ngf=64, max_resolution=256):
@@ -89,6 +114,24 @@ class SimpleGenerator(nn.Module):
         output = torch.tanh(output)
         return output
 
+class BasicGenerator64(nn.Module):
+    def __init__(self, input_dim=2048*3):
+        super(BasicGenerator64, self).__init__()
+        self.main = nn.Sequential(
+            nn.Linear(input_dim, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Linear(512, 64 * 64 * 3),  # Output for 64x64 RGB image
+            nn.Tanh()  # Normalize output to [-1, 1]
+        )
+
+    def forward(self, x,bla):
+        x = self.main(x)
+        return x.view(-1, 3, 64, 64)  # Reshape to image dimensions
+
+
+       
 
 class IRFD(nn.Module):
     def __init__(self, input_dim=2048, ngf=64, max_resolution=256):
@@ -101,12 +144,17 @@ class IRFD(nn.Module):
         self.Ep = CustomResNet50()  # Pose encoder
         
         # Generator
-        self.Gd = SimpleGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
+        # self.Gd = SimpleGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
+        # self.Gd = AnotherGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
+        
+        self.Gd = BasicGenerator64(input_dim=input_dim * 3)
 
         self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
 
     
     def forward(self, x_s, x_t):
+        x_s = x_s.requires_grad_(True)
+        x_t = x_t.requires_grad_(True)
         # Check input range
         # Clamp input values to [-1, 1] range
         x_s = torch.clamp(x_s, -1, 1)
@@ -115,19 +163,21 @@ class IRFD(nn.Module):
         if x_s.min() < -1 or x_s.max() > 1 or x_t.min() < -1 or x_t.max() > 1:
             print(f"Input range warning: x_s min={x_s.min():.2f}, max={x_s.max():.2f}, x_t min={x_t.min():.2f}, max={x_t.max():.2f}")
     
-
-
-        fi_s = self.Ei(x_s)
-        fe_s = self.Ee(x_s)
-        fp_s = self.Ep(x_s)
-        fi_t = self.Ei(x_t)
-        fe_t = self.Ee(x_t)
-        fp_t = self.Ep(x_t)
+        # Gradient Checkpointing:
+        # Implement gradient checkpointing for the emotion
+        fi_s = checkpoint(self.Ei, x_s) 
+        fe_s = checkpoint(self.Ee, x_s) 
+        fp_s = checkpoint(self.Ep, x_s) 
+        fi_t = checkpoint(self.Ei, x_t) 
+        fe_t = checkpoint(self.Ee, x_t) 
+        fp_t = checkpoint(self.Ep, x_t) 
         
         for name, param in self.named_parameters():
             if param.grad is not None:
                 if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                    print(f"NaN or Inf gradient detected in {name}")
+                    print(f"🔥 NaN in {name}")
+
+
 
         # print(f"fi_s shape: {fi_s.shape}")
         # print(f"fi_s statistics:")
@@ -195,14 +245,46 @@ class IRFD(nn.Module):
         return "IRFD(input_dim=2048, ngf=64, max_resolution=256)"
 
 
+#  LogSumExp Trick for Numerical Stability:
+eps = 1e-8  # Small epsilon value
 
+def safe_div(numerator, denominator):
+    return numerator / (denominator + eps)
+
+def safe_log(x):
+    return torch.log(x + eps)
+
+def stable_softmax(x):
+    shifted_x = x - x.max(dim=1, keepdim=True)[0]
+    Z = torch.sum(torch.exp(shifted_x), dim=1, keepdim=True)
+    return torch.exp(shifted_x) / Z
+
+def stable_cross_entropy(logits, targets):
+    num_classes = logits.size(1)
+    one_hot_targets = F.one_hot(targets, num_classes=num_classes)
+    stable_probs = stable_softmax(logits)
+    return -torch.sum(one_hot_targets * safe_log(stable_probs), dim=1).mean()
+
+def clip_loss(loss, min_val=-100, max_val=100):
+    return torch.clamp(loss, min=min_val, max=max_val)
+
+class ScaledMSELoss(nn.Module):
+    def __init__(self, scale=1.0):
+        super().__init__()
+        self.scale = scale
+        self.mse = nn.MSELoss()
+
+    def forward(self, input, target):
+        return self.mse(input * self.scale, target * self.scale)
+    
 class IRFDLoss(nn.Module):
-    def __init__(self, alpha=0.1, lpips_weight=.2):
+    def __init__(self, alpha=0.1, lpips_weight=.3):
         super(IRFDLoss, self).__init__()
         self.alpha = alpha
         self.lpips_weight = lpips_weight
-        self.l2_loss = nn.MSELoss()
-        self.ce_loss = nn.CrossEntropyLoss()
+        self.l2_loss = ScaledMSELoss(scale=0.1)
+        self.ce_loss = stable_cross_entropy
+
         self.lpips_loss = lpips.LPIPS(net='vgg')  # You can also use 'vgg' instead of 'alex'
     
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
@@ -237,8 +319,6 @@ class IRFDLoss(nn.Module):
         emotion_labels_s = emotion_labels_s.view(batch_size)
         emotion_labels_t = emotion_labels_t.view(batch_size)
 
-
-
         # Identity loss
         l_identity = torch.max(
             self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
@@ -260,9 +340,20 @@ class IRFDLoss(nn.Module):
         # LPIPS Perceptual loss
         l_lpips = self.lpips_loss(x_s, x_s_recon).mean() + self.lpips_loss(x_t, x_t_recon).mean()
         
+        # Scale individual losses
+        l_identity *= 1.0
+        l_cls *= 0.1
+        l_pose *= 0.5
+        l_emotion *= 0.5
+        l_self *= 1.0
+        l_lpips *= self.lpips_weight
+        
         # Total loss
-        total_loss = l_identity + l_cls + l_pose + l_emotion + l_self + self.lpips_weight * l_lpips
-        print("total_loss:",total_loss)
+        total_loss = l_identity + l_cls + l_pose + l_emotion + l_self + l_lpips
+        
+        # Clip the total loss to prevent extreme values
+        total_loss = clip_loss(total_loss)
+        
         return total_loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_lpips
 
 

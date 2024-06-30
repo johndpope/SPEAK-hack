@@ -142,7 +142,7 @@ def weight_init(m):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
 
-def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
+def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
     resolutions = [64, 128, 256]
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
@@ -201,7 +201,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
         val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
          # Initialize cyclical learning rate scheduler
         base_lr = config.optimization.learning_rate
-        max_lr = base_lr * 10  # You can adjust this multiplier
+        max_lr = 0.0001# from the white paper
         step_size = epochs_per_resolution * len(train_dataloader) // 2  # Half the epochs per resolution
         scheduler = CyclicLR(optimizer, base_lr=base_lr, max_lr=max_lr, step_size_up=step_size, mode='triangular2')
 
@@ -239,7 +239,7 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                             accelerator.backward(loss)
 
                         if config.training.grad_clip:
-                            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=1.0)
+                            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=config.training.grad_clip_value)
                         optimizer.step()
                         optimizer.zero_grad()
                     except Exception as e:
@@ -266,17 +266,30 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                         save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, resolution, config.training.output_dir)
 
             avg_loss = total_loss / len(train_dataloader)
-            print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
+            progress_bar.set_description(f"Res: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
+
 
             # # Validation step
             val_loss = 0
-            # val_loss = validate(model, val_dataloader, criterion, accelerator)
-            # print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
+            val_loss = validate(model, val_dataloader, criterion, accelerator)
+            print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
-            # # Update the scheduler with the validation loss after each epoch
-            # scheduler.step(val_loss)
+            # Update the scheduler with the validation loss after each epoch
+            scheduler.step(val_loss)
 
             # Save checkpoint
+            if global_step % config.training.save_steps == 0 and accelerator.is_main_process:
+                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
+                accelerator.save({
+                    'epoch': epoch,
+                    'resolution': resolution,
+                    'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'loss': avg_loss,
+                    'val_loss': val_loss,
+                    'global_step': global_step
+                }, save_path)
             if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
                 save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
                 accelerator.save({
@@ -340,39 +353,6 @@ def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
     writer.add_scalar(f'Loss/LPIPS/Resolution_{resolution}', l_pips.item(), global_step)
 
-def train_epoch(model, dataloader, optimizer, criterion, accelerator, config, writer, global_step):
-    model.train()
-    total_loss = 0
-    progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
-    
-    for step, batch in enumerate(dataloader):
-        with accelerator.accumulate(model):
-            x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
-            emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
-
-            outputs = model(x_s, x_t)
-            loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-
-            accelerator.backward(loss)
-            
-            if config.training.grad_clip:
-                accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
-            
-            optimizer.step()
-            optimizer.zero_grad()
-
-        if accelerator.sync_gradients:
-            progress_bar.update(1)
-            global_step += 1
-            total_loss += loss.detach().item()
-
-            if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
-                log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips, global_step,256)
-
-            if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
-                save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, config.training.output_dir)
-
-    return total_loss / len(dataloader)
 
 def validate(model, dataloader, criterion, accelerator):
     model.eval()
@@ -383,10 +363,24 @@ def validate(model, dataloader, criterion, accelerator):
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
 
             outputs = model(x_s, x_t)
-            loss, _, _, _, _, _ = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+            loss, _, _, _, _, _,_ = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
             total_loss += loss.detach().item()
 
     return total_loss / len(dataloader)
+
+class GradientTracker:
+    def __init__(self):
+        self.last_valid_grads = {}
+
+    def hook_fn(self, name):
+        def hook(grad):
+            if torch.isnan(grad).any() or torch.isinf(grad).any():
+                # print(f"NaN in {name} - 🧹 cleaning..")
+                return self.last_valid_grads.get(name, torch.zeros_like(grad))
+            self.last_valid_grads[name] = grad.clone().detach()
+            return grad
+        return hook
+
 
 
 def main():
@@ -407,7 +401,7 @@ def main():
         transforms.Lambda(lambda x: torch.clamp(x, -1, 1))  # Clamp values to [-1, 1]
     ])
 
-
+    
 
     # Load the dataset
     # base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
@@ -415,7 +409,20 @@ def main():
 
     # Initialize model, optimizer, and scheduler
     model = IRFD()
-    optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
+    # optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
+    optimizer = torch.optim.Adam([
+        {'params': model.Ee.features[0].parameters(), 'lr': 1e-5},
+        {'params': [p for n, p in model.named_parameters() if not n.startswith('Ee.features.0')], 'lr': 1e-4}
+    ])
+
+
+
+
+    tracker = GradientTracker()
+
+    for name, param in model.named_parameters():
+        if param.requires_grad:
+            param.register_hook(tracker.hook_fn(name))
 
     torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
     # Initialize accelerator
@@ -442,7 +449,7 @@ def main():
             print(f"Found latest checkpoint: {latest_checkpoint}")
 
     # Run progressive training
-    progressive_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint)
+    progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint)
 
     # Close the SummaryWriter
     writer.close()
