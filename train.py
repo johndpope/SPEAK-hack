@@ -222,9 +222,9 @@ def progressive_train_loop(config, model, base_dataset, optimizer,  accelerator,
                     
                     try:
                         
-                        accumulation_steps = 10  # Adjust as needed
+              
                         optimizer.zero_grad()
-                        for i in range(accumulation_steps):
+                        for i in range(config.training.accumulation_steps):
                             outputs = model(x_s, x_t)
                             if outputs is None:
                                 print("Model returned None, skipping this batch")
