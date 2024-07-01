@@ -14,7 +14,7 @@ from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
 from CelebADataset import CelebADataset, ProgressiveDataset,OverfitDataset,AffectNetDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau, LambdaLR
-from torch.optim import Adam
+
 from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 from torch.optim.lr_scheduler import _LRScheduler
@@ -24,7 +24,7 @@ import math
 from torch.nn.utils import clip_grad_norm_
 from torch.optim.swa_utils import AveragedModel, SWALR
 
-
+from torch.optim import AdamW
 
 
 
@@ -142,7 +142,59 @@ def weight_init(m):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
 
-def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint=None):
+
+def train_step(model, criterion,optimizers, accelerator, x_s, x_t, emotion_labels_s, emotion_labels_t):
+    for opt in optimizers.values():
+        opt.zero_grad()
+
+    # Forward pass
+    with accelerator.accumulate(model):
+        outputs = model(x_s, x_t)
+
+        # criterin = IRFDLoss
+        l_pose, l_emotion, l_identity, l_recon = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+
+        # Accumulate losses
+        total_loss = l_pose + l_emotion + l_identity + l_recon
+
+        # Backward pass (single pass for all losses)
+        accelerator.backward(total_loss)
+
+        # Step optimizers
+        for opt in optimizers.values():
+            opt.step()
+
+    return outputs, l_pose.item(), l_emotion.item(), l_identity.item(), l_recon.item()
+
+
+    #     # Backward pass for pose encoder (Ep)
+    #     pose_loss = l_landmark #+ 0.1 * l_recon  # Adjust the 0.1 factor as needed
+    #     accelerator.backward(pose_loss)
+    #     optimizers['pose'].step()
+    #     model.Ep.zero_grad()
+
+    #     # Backward pass for emotion encoder (Ee)
+    #     emotion_loss = l_emotion# + 0.1 * l_recon  # Adjust the 0.1 factor as needed
+    #     accelerator.backward(emotion_loss)
+    #     optimizers['emotion'].step()
+    #     model.Ee.zero_grad()
+
+    #     # Backward pass for identity encoder (Ei)
+    #     identity_loss = l_identity #+ 0.1 * l_recon  # Adjust the 0.1 factor as needed
+    #     accelerator.backward(identity_loss)
+    #     optimizers['identity'].step()
+    #     model.Ei.zero_grad()
+
+    #     # Backward pass for reconstruction (affects all parts of the model)
+    #     accelerator.backward(l_recon)
+    #     optimizers['other'].step()
+    #     optimizers['pose'].step()
+    #     optimizers['emotion'].step()
+    #     optimizers['identity'].step()
+
+    # return outputs,l_landmark.item(), l_emotion.item(), l_identity.item(), l_recon.item()
+
+def progressive_irfd_train_loop(config, model, base_dataset, optimizers, accelerator, writer, criterion, latest_checkpoint=None):
     resolutions = [256]
     epochs_per_resolution = config.training.epochs_per_resolution
     warmup_steps = config.training.warmup_steps
@@ -164,34 +216,22 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  acceler
         # Load model state dict while ignoring unexpected keys
         model_dict = model.state_dict()
         checkpoint_model_dict = checkpoint['model_state_dict']
-        # Filter out unexpected keys
         filtered_dict = {k: v for k, v in checkpoint_model_dict.items() if k in model_dict}
-        # Update model dict and load
         model_dict.update(filtered_dict)
         model.load_state_dict(model_dict)
         
-        # Load optimizer and scheduler state dicts
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        # scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        # Load optimizers state dicts
+        for k, opt in optimizers.items():
+            opt.load_state_dict(checkpoint[f'optimizer_{k}_state_dict'])
         
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
         print(f"Loaded {len(filtered_dict)} / {len(checkpoint_model_dict)} keys from checkpoint")
 
-    def init_weights(m):
-        if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-            if m.bias is not None:
-                nn.init.constant_(m.bias, 0)
-        elif isinstance(m, nn.BatchNorm2d):
-            nn.init.constant_(m.weight, 1)
-            nn.init.constant_(m.bias, 0)
-
-    model.Gd.apply(init_weights)
     # Weight initialization
     model.apply(weight_init)
 
-    # Prepare model, optimizer, and scheduler
-    model, optimizer = accelerator.prepare(model, optimizer)
+    # Prepare model and optimizers
+    model, optimizers = accelerator.prepare(model, optimizers)
 
     for resolution_index in range(start_resolution_index, len(resolutions)):
         resolution = resolutions[resolution_index]
@@ -199,15 +239,17 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  acceler
         
         train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
         val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
-         # Initialize cyclical learning rate scheduler
-        base_lr = config.optimization.learning_rate
-        max_lr = 0.0001# from the white paper
-        step_size = epochs_per_resolution * len(train_dataloader) // 2  # Half the epochs per resolution
-        scheduler = CyclicLR(optimizer, base_lr=base_lr, max_lr=max_lr, step_size_up=step_size, mode='triangular2')
 
+        # Initialize cyclical learning rate scheduler
+        base_lr = config.optimization.learning_rate
+        max_lr = 0.0001  # from the white paper
+        step_size = epochs_per_resolution * len(train_dataloader) // 2  # Half the epochs per resolution
+        schedulers = {k: CyclicLR(opt, base_lr=base_lr, max_lr=max_lr, step_size_up=step_size, mode='triangular2')
+                      for k, opt in optimizers.items()}
 
         # Warm-up scheduler
-        warmup_scheduler = get_warmup_scheduler(optimizer, warmup_steps, scheduler)
+        warmup_schedulers = {k: get_warmup_scheduler(opt, warmup_steps, schedulers[k])
+                             for k, opt in optimizers.items()}
         
         for epoch in range(start_epoch, epochs_per_resolution):
             model.train()
@@ -216,51 +258,37 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  acceler
             progress_bar.set_description(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}")
 
             for step, batch in enumerate(train_dataloader):
-                with accelerator.accumulate(model):
-                    x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
-                    emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
+                x_s, x_t = batch["source_image"].to(accelerator.device), batch["target_image"].to(accelerator.device)
+                emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"].to(accelerator.device), batch["emotion_labels_t"].to(accelerator.device)
+                
+                try:
+                    outputs,l_landmark, l_emotion, l_identity, l_recon = train_step(model,criterion, optimizers, accelerator, x_s, x_t, emotion_labels_s, emotion_labels_t)
+                    loss = l_landmark + l_emotion + l_identity + l_recon
                     
-                    try:
-                        
-              
-                        optimizer.zero_grad()
-                        for i in range(config.training.accumulation_steps):
-                            outputs = model(x_s, x_t)
-                            if outputs is None:
-                                print("Model returned None, skipping this batch")
-                                continue
-                            loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                            if torch.isnan(loss) or torch.isinf(loss):
-                                print(f"Loss is {loss}, skipping this batch")
-                                continue
-                            loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-                            if check_for_nans(loss, "loss") or check_for_nans(l_identity, "l_identity") or check_for_nans(l_cls, "l_cls") or check_for_nans(l_pose, "l_pose") or check_for_nans(l_emotion, "l_emotion") or check_for_nans(l_self, "l_self") or check_for_nans(l_pips, "l_pips"):
-                                raise ValueError("NaN detected in loss components")
-                            accelerator.backward(loss)
+                    # if torch.isnan(loss) or torch.isinf(loss):
+                    #     print(f"Loss is {loss}, skipping this batch")
+                    #     continue
 
-                        if config.training.grad_clip:
-                            torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=config.training.grad_clip_value)
-                        optimizer.step()
-                        optimizer.zero_grad()
-                    except Exception as e:
-                        print("error:",e)
-                        save_image(x_s, os.path.join(config.training.output_dir, "x_s_failed.png"))
-                        save_image(x_t, os.path.join(config.training.output_dir, "x_t_failed.png"))
-                        raise ValueError("NaN in x_s - check x_s_failed.png") 
+                except Exception as e:
+                    print("error:", e)
+                    save_image(x_s, os.path.join(config.training.output_dir, "x_s_failed.png"))
+                    save_image(x_t, os.path.join(config.training.output_dir, "x_t_failed.png"))
+                    raise ValueError("Error in x_s or x_t - check x_s_failed.png and x_t_failed.png") 
 
                 if accelerator.sync_gradients:
                     progress_bar.update(1)
                     global_step += 1
-                    total_loss += loss.detach().item()
+                    total_loss += loss
 
                     if global_step < warmup_steps:
-                        warmup_scheduler.step()
+                        for ws in warmup_schedulers.values():
+                            ws.step()
                     else:
-                        # Use the average training loss for the main scheduler during training
-                        scheduler.step(total_loss / (step + 1))
+                        for s in schedulers.values():
+                            s.step(total_loss / (step + 1))
 
                     if writer is not None and accelerator.is_main_process and global_step % config.training.log_steps == 0:
-                        log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self, l_pips,global_step, resolution)
+                        log_training_step(writer, loss, l_identity, l_emotion, l_landmark, l_recon, global_step, resolution)
 
                     if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
                         save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, resolution, config.training.output_dir)
@@ -268,40 +296,28 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizer,  acceler
             avg_loss = total_loss / len(train_dataloader)
             progress_bar.set_description(f"Res: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
 
-
-            # # Validation step
-            val_loss = 0
+            # Validation step
             val_loss = validate(model, val_dataloader, criterion, accelerator)
             print(f"Resolution {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Validation Loss: {val_loss:.4f}")
 
-            # Update the scheduler with the validation loss after each epoch
-            scheduler.step(val_loss)
+            # Update the schedulers with the validation loss after each epoch
+            for s in schedulers.values():
+                s.step(val_loss)
 
             # Save checkpoint
             if global_step % config.training.save_steps == 0 and accelerator.is_main_process:
                 save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
-                accelerator.save({
+                save_dict = {
                     'epoch': epoch,
                     'resolution': resolution,
                     'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
                     'loss': avg_loss,
                     'val_loss': val_loss,
                     'global_step': global_step
-                }, save_path)
-            if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
-                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
-                accelerator.save({
-                    'epoch': epoch,
-                    'resolution': resolution,
-                    'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'loss': avg_loss,
-                    'val_loss': val_loss,
-                    'global_step': global_step
-                }, save_path)
+                }
+                for k, opt in optimizers.items():
+                    save_dict[f'optimizer_{k}_state_dict'] = opt.state_dict()
+                accelerator.save(save_dict, save_path)
 
         # Reset start_epoch for the next resolution
         start_epoch = 0
@@ -409,12 +425,13 @@ def main():
 
     # Initialize model, optimizer, and scheduler
     model = IRFD()
-    # optimizer = Adam(model.parameters(), lr=config.optimization.learning_rate, weight_decay=config.training.weight_decay)
-    optimizer = torch.optim.Adam([
-        {'params': model.Ee.features[0].parameters(), 'lr': 1e-5},
-        {'params': [p for n, p in model.named_parameters() if not n.startswith('Ee.features.0')], 'lr': 1e-4}
-    ])
-
+    optimizers = {
+        'pose': AdamW(model.Ep.parameters(), lr=0.0001, weight_decay=0.01),
+        'emotion': AdamW(model.Ee.parameters(), lr=0.0001, weight_decay=0.01),
+        'identity': AdamW(model.Ei.parameters(), lr=0.0001, weight_decay=0.01),
+        'other': AdamW([p for n, p in model.named_parameters() 
+                        if not n.startswith(('Ep', 'Ee', 'Ei'))], lr=0.0001, weight_decay=0.01)
+    }
 
 
 
@@ -449,7 +466,7 @@ def main():
             print(f"Found latest checkpoint: {latest_checkpoint}")
 
     # Run progressive training
-    progressive_irfd_train_loop(config, model, base_dataset, optimizer,  accelerator, writer, criterion, latest_checkpoint)
+    progressive_irfd_train_loop(config, model, base_dataset, optimizers,  accelerator, writer, criterion, latest_checkpoint)
 
     # Close the SummaryWriter
     writer.close()
