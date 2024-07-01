@@ -35,7 +35,7 @@ training:
   grad_clip: true
   grad_clip_value: 0.5
   save_epochs: 1
-  save_steps: 250
+  save_steps: 2500
   log_steps: 100
   warmup_steps: 1000
   l2_lambda: 0.0001

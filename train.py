@@ -155,7 +155,7 @@ def train_step(model, criterion,optimizers, accelerator, x_s, x_t, emotion_label
         l_pose, l_emotion, l_identity, l_recon = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
 
         # Accumulate losses
-        total_loss = l_pose + l_emotion + l_identity + l_recon
+        total_loss = l_pose *4 + l_emotion + l_identity + l_recon
 
         # Backward pass (single pass for all losses)
         accelerator.backward(total_loss)
@@ -293,6 +293,20 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
                     if global_step % config.training.save_image_steps == 0 and accelerator.is_main_process:
                         save_debug_images(x_s, x_t, outputs[0], outputs[1], global_step, resolution, config.training.output_dir)
 
+                          # Save checkpoint
+                    if global_step % config.training.save_steps == 0 and accelerator.is_main_process:
+                        save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-step-{global_step+1}")
+                        save_dict = {
+                            'epoch': epoch,
+                            'resolution': resolution,
+                            'model_state_dict': accelerator.unwrap_model(model).state_dict(),
+                          
+                            'global_step': global_step
+                        }
+                        for k, opt in optimizers.items():
+                            save_dict[f'optimizer_{k}_state_dict'] = opt.state_dict()
+                        accelerator.save(save_dict, save_path)
+
             avg_loss = total_loss / len(train_dataloader)
             progress_bar.set_description(f"Res: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}, Avg Loss: {avg_loss:.4f}")
 
@@ -304,20 +318,7 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
             for s in schedulers.values():
                 s.step(val_loss)
 
-            # Save checkpoint
-            if epoch % config.training.save_epochs == 0 and accelerator.is_main_process:
-                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
-                save_dict = {
-                    'epoch': epoch,
-                    'resolution': resolution,
-                    'model_state_dict': accelerator.unwrap_model(model).state_dict(),
-                    'loss': avg_loss,
-                    'val_loss': val_loss,
-                    'global_step': global_step
-                }
-                for k, opt in optimizers.items():
-                    save_dict[f'optimizer_{k}_state_dict'] = opt.state_dict()
-                accelerator.save(save_dict, save_path)
+          
 
         # Reset start_epoch for the next resolution
         start_epoch = 0
@@ -464,7 +465,7 @@ def main():
         if checkpoints:
             latest_checkpoint = max(checkpoints, key=lambda x: os.path.getmtime(os.path.join(config.training.output_dir, x)))
             latest_checkpoint = os.path.join(config.training.output_dir, latest_checkpoint)
-            print(f"Found latest checkpoint: {latest_checkpoint}")
+            print(f"👑 Found latest checkpoint: {latest_checkpoint}")
 
     # Run progressive training
     progressive_irfd_train_loop(config, model, base_dataset, optimizers,  accelerator, writer, criterion, latest_checkpoint)
