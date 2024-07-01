@@ -219,7 +219,7 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
         filtered_dict = {k: v for k, v in checkpoint_model_dict.items() if k in model_dict}
         model_dict.update(filtered_dict)
         model.load_state_dict(model_dict)
-        
+        model.to(accelerator.device)
         # Load optimizers state dicts
         for k, opt in optimizers.items():
             opt.load_state_dict(checkpoint[f'optimizer_{k}_state_dict'])
