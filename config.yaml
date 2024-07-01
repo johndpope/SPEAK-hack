@@ -1,6 +1,6 @@
 # Model configuration
 model:
-  sample_size: 512
+  sample_size: 256
   in_channels: 3
   out_channels: 3
   center_input_sample: false
@@ -17,36 +17,41 @@ model:
 training:
   output_dir: "./speak"
   num_epochs: 100
-  train_batch_size: 2
+  train_batch_size: 1
   eval_batch_size: 16
-  save_image_steps: 1000  # Save reconstructed image every 500 steps
+  save_image_steps: 100  # Save reconstructed image every 500 steps
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
-  epochs_per_resolution: 1
+  epochs_per_resolution: 500
+  accumulation_steps: 10 # this could be bigger
   eval_steps: 1000
   logging_steps: 100
   P_mean: -0.4
   P_std: 1.0
   sigma_data: 0.5
-  num_workers: 1
+  num_workers: 4
   val_batch_size: 32
   early_stopping_patience: 10
   grad_clip: true
-  grad_clip_value: 1.0
-  save_epochs: 1000
+  grad_clip_value: 0.5
+  save_epochs: 1
+  save_steps: 2500
   log_steps: 100
-
+  warmup_steps: 1000
+  l2_lambda: 0.0001
+  weight_decay: 0.0001
 
 # Dataset configuration
 dataset:
   name: "lansinuote/gen.1.celeba"
   split: "train[:80%]"
-  image_size: 64
+  image_size: 256
   val_split: 0.2 # 10% of data for validation
 
 # Optimization configuration
 optimization:
-  learning_rate: 1e-4
+  irfd_learning_rate:  0.0001  # or even 1e-6
+  learning_rate: 1e-5
   lr_warmup_steps: 500
   num_train_timesteps: 1000
   beta_start: 0.0001

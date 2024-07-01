@@ -26,3 +26,15 @@ https://github.com/neeek2303/FEED
 Inter-Reconstructed Feature disentanglement(IRFD)
 
 ![screenshot](fig2.png)
+
+
+
+
+![Screenshot from 2024-06-30 05-43-40](https://github.com/johndpope/SPEAK-hack/assets/289994/aec76f4d-eab9-4c7a-8132-cc08ead89c0b)
+```shell
+tensorboard --logdir=./speak/logs
+```
+
+
+AffectNet
+https://www.kaggle.com/datasets/thienkhonghoc/affectnet?resource=download
