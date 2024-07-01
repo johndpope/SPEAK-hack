@@ -305,7 +305,7 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
                 s.step(val_loss)
 
             # Save checkpoint
-            if global_step % config.training.save_steps == 0 and accelerator.is_main_process:
+            if epoch % config.training.save_epochs == 0 and accelerator.is_main_process:
                 save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch+1}")
                 save_dict = {
                     'epoch': epoch,
@@ -360,14 +360,15 @@ def create_progressive_dataloader(config, base_dataset, resolution, is_validatio
         pin_memory=True
     )
 
-def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self,l_pips, global_step, resolution):
-    writer.add_scalar(f'Loss/Total/Resolution_{resolution}', loss.item(), global_step)
-    writer.add_scalar(f'Loss/Identity/Resolution_{resolution}', l_identity.item(), global_step)
-    writer.add_scalar(f'Loss/Classification/Resolution_{resolution}', l_cls.item(), global_step)
-    writer.add_scalar(f'Loss/Pose/Resolution_{resolution}', l_pose.item(), global_step)
-    writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion.item(), global_step)
-    writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
-    writer.add_scalar(f'Loss/LPIPS/Resolution_{resolution}', l_pips.item(), global_step)
+# writer, loss, l_identity, l_emotion, l_landmark, l_recon, global_step, resolution
+def log_training_step(writer, loss, l_identity, l_emotion, l_landmark, l_recon, global_step, resolution):
+    writer.add_scalar(f'Loss/Total/Resolution_{resolution}', loss, global_step)
+    writer.add_scalar(f'Loss/Identity/Resolution_{resolution}', l_identity, global_step)
+    writer.add_scalar(f'Loss/Emotion{resolution}', l_emotion, global_step)
+    writer.add_scalar(f'Loss/landmark/Resolution_{resolution}', l_landmark, global_step)
+    writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion, global_step)
+    writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_recon, global_step)
+
 
 
 def validate(model, dataloader, criterion, accelerator):
