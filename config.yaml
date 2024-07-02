@@ -31,6 +31,7 @@ training:
   grad_clip: true
   grad_clip_value: 1.0
   save_epochs: 10
+  save_steps: 2500
   initial_resolution: 64  # Starting resolution for progressive growing
   max_resolution: 512  # Maximum resolution for progressive growing
   label_balance: 0.5  # Balance between IRFD loss and StyleGAN loss
