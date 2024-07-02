@@ -142,30 +142,45 @@ def weight_init(m):
         nn.init.constant_(m.weight, 1)
         nn.init.constant_(m.bias, 0)
 
-
-def train_step(model, criterion,optimizers, accelerator, x_s, x_t, emotion_labels_s, emotion_labels_t):
+def train_step(model, criterion, optimizers, accelerator, x_s, x_t, emotion_labels_s, emotion_labels_t):
+    # Zero all gradients
     for opt in optimizers.values():
         opt.zero_grad()
 
-    # Forward pass
+    # Forward pass for identity
+    with accelerator.accumulate(model):
+        fi_s = model.forward_identity(x_s)
+        fi_t = model.forward_identity(x_t)
+        identity_loss = criterion.identity_loss(fi_s, fi_t)
+        accelerator.backward(identity_loss)
+        optimizers['identity'].step()
+
+    # Forward pass for emotion
+    with accelerator.accumulate(model):
+        fe_s = model.forward_emotion(x_s)
+        fe_t = model.forward_emotion(x_t)
+        emotion_loss = criterion.emotion_loss(fe_s, fe_t, emotion_labels_s, emotion_labels_t)
+        accelerator.backward(emotion_loss)
+        optimizers['emotion'].step()
+
+    # Forward pass for pose
+    with accelerator.accumulate(model):
+        fp_s = model.forward_pose(x_s)
+        fp_t = model.forward_pose(x_t)
+        pose_loss = criterion.pose_loss(fp_s, fp_t)
+        accelerator.backward(pose_loss)
+        optimizers['pose'].step()
+
+    # Full forward pass for reconstruction
     with accelerator.accumulate(model):
         outputs = model(x_s, x_t)
+        x_s_recon, x_t_recon = outputs[0], outputs[1]
+        recon_loss = criterion.reconstruction_loss(x_s, x_t, x_s_recon, x_t_recon)
+        accelerator.backward(recon_loss)
+        optimizers['other'].step()
 
-        # criterin = IRFDLoss
-        l_pose, l_emotion, l_identity, l_recon = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-
-        # Accumulate losses
-        total_loss = l_pose *4 + l_emotion + l_identity + l_recon
-
-        # Backward pass (single pass for all losses)
-        accelerator.backward(total_loss)
-
-        # Step optimizers
-        for opt in optimizers.values():
-            opt.step()
-
-    return outputs, l_pose.item(), l_emotion.item(), l_identity.item(), l_recon.item()
-
+    total_loss = identity_loss + emotion_loss + pose_loss + recon_loss
+    return outputs, pose_loss.item(), emotion_loss.item(), identity_loss.item(), recon_loss.item()
 
     #     # Backward pass for pose encoder (Ep)
     #     pose_loss = l_landmark #+ 0.1 * l_recon  # Adjust the 0.1 factor as needed
@@ -203,6 +218,11 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
     start_resolution_index = 0
     start_epoch = 0
 
+    # Prepare model and optimizers
+    model, optimizers = accelerator.prepare(model, optimizers)
+    # Weight initialization
+    model.apply(weight_init)
+
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=accelerator.device)
         global_step = checkpoint['global_step']
@@ -227,11 +247,9 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
         print(f"Resuming training from resolution {last_resolution}, epoch {start_epoch}")
         print(f"Loaded {len(filtered_dict)} / {len(checkpoint_model_dict)} keys from checkpoint")
 
-    # Weight initialization
-    model.apply(weight_init)
 
-    # Prepare model and optimizers
-    model, optimizers = accelerator.prepare(model, optimizers)
+
+
 
     for resolution_index in range(start_resolution_index, len(resolutions)):
         resolution = resolutions[resolution_index]
@@ -264,11 +282,7 @@ def progressive_irfd_train_loop(config, model, base_dataset, optimizers, acceler
                 try:
                     outputs,l_landmark, l_emotion, l_identity, l_recon = train_step(model,criterion, optimizers, accelerator, x_s, x_t, emotion_labels_s, emotion_labels_t)
                     loss = l_landmark + l_emotion + l_identity + l_recon
-                    
-                    # if torch.isnan(loss) or torch.isinf(loss):
-                    #     print(f"Loss is {loss}, skipping this batch")
-                    #     continue
-
+      
                 except Exception as e:
                     print("error:", e)
                     save_image(x_s, os.path.join(config.training.output_dir, "x_s_failed.png"))
@@ -428,11 +442,11 @@ def main():
     # Initialize model, optimizer, and scheduler
     model = IRFD()
     optimizers = {
-        'pose': AdamW(model.Ep.parameters(), lr=0.0001, weight_decay=0.01),
-        'emotion': AdamW(model.Ee.parameters(), lr=0.0001, weight_decay=0.01),
         'identity': AdamW(model.Ei.parameters(), lr=0.0001, weight_decay=0.01),
+        'emotion': AdamW(model.Ee.parameters(), lr=0.0001, weight_decay=0.01),
+        'pose': AdamW(model.Ep.parameters(), lr=0.0001, weight_decay=0.01),
         'other': AdamW([p for n, p in model.named_parameters() 
-                        if not n.startswith(('Ep', 'Ee', 'Ei'))], lr=0.0001, weight_decay=0.01)
+                        if not n.startswith(('Ei', 'Ee', 'Ep'))], lr=0.0001, weight_decay=0.01)
     }
 
 

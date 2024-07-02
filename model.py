@@ -235,118 +235,45 @@ class CIPSGenerator(nn.Module):
         output = (output * 2) - 1
         
         return output
-
 class IRFD(nn.Module):
-    def __init__(self, input_dim=2048, ngf=64, max_resolution=256):
+    def __init__(self):
         super(IRFD, self).__init__()
-        
-        self.enable_swapping = True
-        # Encoders
         self.Ei = CustomResNet50()  # Identity encoder
         self.Ee = CustomResNet50()  # Emotion encoder
         self.Ep = CustomResNet50()  # Pose encoder
-        
-        # Generator
-        # self.Gd = SimpleGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
-        self.Gd =  CIPSGenerator(input_dim * 3)
-        # self.Gd = AnotherGenerator(input_dim=input_dim * 3, ngf=ngf, max_resolution=max_resolution)
-        
-        self.Gd = BasicGenerator256(input_dim=input_dim * 3)
+        self.Gd = SimpleGenerator(input_dim=2048*3)  # Assuming SimpleGenerator is defined elsewhere
 
-        self.Cm = nn.Linear(2048, 8) # 8 = num_emotion_classes
-
-    
     def forward(self, x_s, x_t):
-        x_s = x_s.requires_grad_(True)
-        x_t = x_t.requires_grad_(True)
-        # Check input range
-        # Clamp input values to [-1, 1] range
-        x_s = torch.clamp(x_s, -1, 1)
-        x_t = torch.clamp(x_t, -1, 1)
+        # Identity forward pass
+        fi_s = self.Ei(x_s)
+        fi_t = self.Ei(x_t)
 
-        if x_s.min() < -1 or x_s.max() > 1 or x_t.min() < -1 or x_t.max() > 1:
-            print(f"Input range warning: x_s min={x_s.min():.2f}, max={x_s.max():.2f}, x_t min={x_t.min():.2f}, max={x_t.max():.2f}")
-    
-        # Gradient Checkpointing:
-        # Implement gradient checkpointing for the emotion
-        fi_s = checkpoint(self.Ei, x_s) 
-        fe_s = checkpoint(self.Ee, x_s) 
-        fp_s = checkpoint(self.Ep, x_s) 
-        fi_t = checkpoint(self.Ei, x_t) 
-        fe_t = checkpoint(self.Ee, x_t) 
-        fp_t = checkpoint(self.Ep, x_t) 
-        
-        for name, param in self.named_parameters():
-            if param.grad is not None:
-                if torch.isnan(param.grad).any() or torch.isinf(param.grad).any():
-                    print(f"🔥 NaN in {name}")
+        # Emotion forward pass
+        fe_s = self.Ee(x_s)
+        fe_t = self.Ee(x_t)
 
+        # Pose forward pass
+        fp_s = self.Ep(x_s)
+        fp_t = self.Ep(x_t)
 
+        # Combine features
+        gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1)
+        gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1)
 
-        # print(f"fi_s shape: {fi_s.shape}")
-        # print(f"fi_s statistics:")
-        # print(f"  Min: {fi_s.min().item():.4f}")
-        # print(f"  Max: {fi_s.max().item():.4f}")
-        # print(f"  Mean: {fi_s.mean().item():.4f}")
-        # print(f"  Std: {fi_s.std().item():.4f}")
-
-        # print(f"fi_t shape: {fi_t.shape}")
-        # print(f"fi_t statistics:")
-        # print(f"  Min: {fi_t.min().item():.4f}")
-        # print(f"  Max: {fi_t.max().item():.4f}")
-        # print(f"  Mean: {fi_t.mean().item():.4f}")
-        # print(f"  Std: {fi_t.std().item():.4f}")
-
-
-         # Conditional swapping
-        if self.enable_swapping:
-            swap_type = torch.randint(0, 3, (1,)).item()
-            if swap_type == 0:
-                fi_s, fi_t = fi_t, fi_s
-                # print("Swapped identity features")
-            elif swap_type == 1:
-                fe_s, fe_t = fe_t, fe_s
-                # print("Swapped emotion features")
-            else:
-                fp_s, fp_t = fp_t, fp_s
-                # print("Swapped pose features")
-        # else:
-            # print("Swapping disabled")
-
-        # Concatenate features for generator input
-        gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
-        gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
-        
-        # print(f"Generator input - gen_input_s: {gen_input_s.shape}")
-        # print(f"Generator input min/max/mean - gen_input_s: {gen_input_s.min():.4f}/{gen_input_s.max():.4f}/{gen_input_s.mean():.4f}")
-        
         # Generate reconstructed images
-        target_resolution = x_s.shape[2]  # Assuming square images
-        x_s_recon = self.Gd(gen_input_s, target_resolution)
-        x_t_recon = self.Gd(gen_input_t, target_resolution)
-        
-        # print("Feature extraction successful!")
-        # print(f"Feature shape: {x_s_recon.shape}")
-        # print(f"Feature statistics:")
-        # print(f"  Min: {x_s_recon.min().item():.4f}")
-        # print(f"  Max: {x_s_recon.max().item():.4f}")
-        # print(f"  Mean: {x_s_recon.mean().item():.4f}")
-        # print(f"  Std: {x_s_recon.std().item():.4f}")
+        x_s_recon = self.Gd(gen_input_s, x_s.shape[2])
+        x_t_recon = self.Gd(gen_input_t, x_t.shape[2])
 
-        # print(f"Reconstructed images - x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
-        # print(f"Reconstructed min/max/mean - x_s_recon: {x_s_recon.min():.4f}/{x_s_recon.max():.4f}/{x_s_recon.mean():.4f}")
-        
-        # Apply softmax to emotion predictions
-        emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
-        emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
-        
-        # print(f"Emotion predictions - emotion_pred_s: {emotion_pred_s.shape}")
-        # print(f"Emotion pred min/max/mean - emotion_pred_s: {emotion_pred_s.min():.4f}/{emotion_pred_s.max():.4f}/{emotion_pred_s.mean():.4f}")
-      
-        return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
+        return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t
 
-    def __repr__(self):
-        return "IRFD(input_dim=2048, ngf=64, max_resolution=256)"
+    def forward_identity(self, x):
+        return self.Ei(x)
+
+    def forward_emotion(self, x):
+        return self.Ee(x)
+
+    def forward_pose(self, x):
+        return self.Ep(x)
 
 
 #  LogSumExp Trick for Numerical Stability:
@@ -381,6 +308,7 @@ class ScaledMSELoss(nn.Module):
     def forward(self, input, target):
         return self.mse(input * self.scale, target * self.scale)
     
+
 class IRFDLoss(nn.Module):
     def __init__(self, alpha=0.1, lpips_weight=0.3, landmark_weight=1.0, emotion_weight=1.0, identity_weight=1.0):
         super(IRFDLoss, self).__init__()
@@ -403,7 +331,6 @@ class IRFDLoss(nn.Module):
 
         for i in range(batch_size):
             image = images[i]
-            # Detach the tensor and move it to CPU before converting to numpy
             image_np = (image.detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
             results = self.face_mesh.process(image_np)
             if results.multi_face_landmarks:
@@ -427,62 +354,33 @@ class IRFDLoss(nn.Module):
         
         return torch.stack(losses).mean()
 
-    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
-        # Assertions to check for NaNs
-        assert not torch.isnan(x_s).any(), "NaN detected in x_s"
-        assert not torch.isnan(x_t).any(), "NaN detected in x_t"
-        assert not torch.isnan(x_s_recon).any(), "NaN detected in x_s_recon"
-        assert not torch.isnan(x_t_recon).any(), "NaN detected in x_t_recon"
-        assert not torch.isnan(fi_s).any(), "NaN detected in fi_s"
-        assert not torch.isnan(fe_s).any(), "NaN detected in fe_s"
-        assert not torch.isnan(fp_s).any(), "NaN detected in fp_s"
-        assert not torch.isnan(fi_t).any(), "NaN detected in fi_t"
-        assert not torch.isnan(fe_t).any(), "NaN detected in fe_t"
-        assert not torch.isnan(fp_t).any(), "NaN detected in fp_t"
-        assert not torch.isnan(emotion_pred_s).any(), "NaN detected in emotion_pred_s"
-        assert not torch.isnan(emotion_pred_t).any(), "NaN detected in emotion_pred_t"
-        assert not torch.isnan(emotion_labels_s).any(), "NaN detected in emotion_labels_s"
-        assert not torch.isnan(emotion_labels_t).any(), "NaN detected in emotion_labels_t"
+    def identity_loss(self, fi_s, fi_t):
+        return self.l2_loss(fi_s, fi_t) * self.identity_weight
 
+    def emotion_loss(self, fe_s, fe_t, emotion_labels_s, emotion_labels_t):
+        emotion_pred_s = torch.softmax(fe_s, dim=1)
+        emotion_pred_t = torch.softmax(fe_t, dim=1)
+        loss_s = self.ce_loss(emotion_pred_s, emotion_labels_s)
+        loss_t = self.ce_loss(emotion_pred_t, emotion_labels_t)
+        return (loss_s + loss_t) * self.emotion_weight
 
+    def pose_loss(self, fp_s, fp_t):
+        return self.l2_loss(fp_s, fp_t) * self.landmark_weight
 
-        # Ensure all images have the same size
-        x_s = F.interpolate(x_s, size=x_s_recon.shape[2:], mode='bilinear', align_corners=False)
-        x_t = F.interpolate(x_t, size=x_t_recon.shape[2:], mode='bilinear', align_corners=False)
-
-        # Ensure all inputs have the same batch size
-        batch_size = x_s.size(0)
-        
-        # Reshape emotion predictions and labels if necessary
-        emotion_pred_s = emotion_pred_s.view(batch_size, -1)
-        emotion_pred_t = emotion_pred_t.view(batch_size, -1)
-        emotion_labels_s = emotion_labels_s.view(batch_size)
-        emotion_labels_t = emotion_labels_t.view(batch_size)
-
-        # Landmark loss for pose encoder (Ep)
-        l_landmark_s = self.landmark_loss(x_s, x_s_recon)
-        l_landmark_t = self.landmark_loss(x_t, x_t_recon)
-        l_pose = (l_landmark_s + l_landmark_t) * self.landmark_weight
-
-        # Emotion loss for emotion encoder (Ee)
-        l_emotion = (self.ce_loss(emotion_pred_s, emotion_labels_s) + 
-                     self.ce_loss(emotion_pred_t, emotion_labels_t)) * self.emotion_weight
-
-        # Identity loss for identity encoder (Ei)
-        l_identity = self.l2_loss(fi_s, fi_t) * self.identity_weight
-
-        # Other losses
+    def reconstruction_loss(self, x_s, x_t, x_s_recon, x_t_recon):
         l_self = self.l2_loss(x_s, x_s_recon) + self.l2_loss(x_t, x_t_recon)
         l_lpips = (self.lpips_loss(x_s, x_s_recon).mean() + 
                    self.lpips_loss(x_t, x_t_recon).mean()) * self.lpips_weight
+        return l_self + l_lpips
 
-        # Total reconstruction loss
-        l_recon = l_self + l_lpips
+    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t):
+        l_identity = self.identity_loss(fi_s, fi_t)
+        l_emotion = self.emotion_loss(fe_s, fe_t, emotion_labels_s, emotion_labels_t)
+        l_pose = self.pose_loss(fp_s, fp_t)
+        l_landmark = self.landmark_loss(x_s, x_s_recon) + self.landmark_loss(x_t, x_t_recon)
+        l_recon = self.reconstruction_loss(x_s, x_t, x_s_recon, x_t_recon)
 
-        return l_pose, l_emotion, l_identity, l_recon
-
-
-        
+        return l_pose + l_landmark, l_emotion, l_identity, l_recon
 
     def __del__(self):
         # Clean up MediaPipe resources
