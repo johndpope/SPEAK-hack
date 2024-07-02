@@ -19,7 +19,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torch.optim import AdamW
 import random
 import numpy as np
-
+import torch.nn.functional as F
 
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_dir):
     def denorm(x):
@@ -75,9 +75,10 @@ def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self
     writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion.item(), global_step)
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
 
-def train_epoch(config, model, dataloader, optimizer, criterion, stylegan_loss, accelerator, epoch, writer):
+def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, stylegan_loss, accelerator, epoch, writer):
     model.train()
-    total_loss = 0
+    total_loss_G = 0
+    total_loss_D = 0
     progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch+1}")
 
@@ -86,39 +87,66 @@ def train_epoch(config, model, dataloader, optimizer, criterion, stylegan_loss, 
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
 
+            # Train Discriminator
+            optimizer_D.zero_grad()
+            
             outputs = model(x_s, x_t)
             x_s_recon, x_t_recon = outputs[0], outputs[1]
 
+            d_real_s = model.D(x_s)
+            d_real_t = model.D(x_t)
+            d_fake_s = model.D(x_s_recon.detach())
+            d_fake_t = model.D(x_t_recon.detach())
+
+            loss_D = (
+                F.binary_cross_entropy_with_logits(d_real_s, torch.ones_like(d_real_s)) +
+                F.binary_cross_entropy_with_logits(d_real_t, torch.ones_like(d_real_t)) +
+                F.binary_cross_entropy_with_logits(d_fake_s, torch.zeros_like(d_fake_s)) +
+                F.binary_cross_entropy_with_logits(d_fake_t, torch.zeros_like(d_fake_t))
+            )
+
+            accelerator.backward(loss_D)
+            optimizer_D.step()
+
+            # Train Generator
+            optimizer_G.zero_grad()
+
             irfd_loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
             
-            stylegan_loss_value = stylegan_loss(x_s, x_s_recon) + stylegan_loss(x_t, x_t_recon)
+            d_fake_s = model.D(x_s_recon)
+            d_fake_t = model.D(x_t_recon)
+            
+            loss_G_adv = (
+                F.binary_cross_entropy_with_logits(d_fake_s, torch.ones_like(d_fake_s)) +
+                F.binary_cross_entropy_with_logits(d_fake_t, torch.ones_like(d_fake_t))
+            )
 
-            loss = irfd_loss + config.training.stylegan_loss_weight * stylegan_loss_value
+            loss_G = irfd_loss + config.training.stylegan_loss_weight * loss_G_adv
 
-            accelerator.backward(loss)
+            accelerator.backward(loss_G)
             
             if config.training.grad_clip:
                 accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
             
-            optimizer.step()
-            optimizer.zero_grad()
+            optimizer_G.step()
 
         if accelerator.sync_gradients:
             progress_bar.update(1)
-            total_loss += loss.detach().float()
+            total_loss_G += loss_G.detach().float()
+            total_loss_D += loss_D.detach().float()
 
         global_step = epoch * len(dataloader) + step
         if accelerator.is_main_process:
             if step % config.training.logging_steps == 0:
-                print(f"Epoch {epoch+1}, Step {step}: loss = {loss.item():.4f}, irfd_loss = {irfd_loss.item():.4f}, stylegan_loss = {stylegan_loss_value.item():.4f}")
-                writer.add_scalar('Loss/Train/Total', loss.item(), global_step)
+                print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item():.4f}, loss_D = {loss_D.item():.4f}")
+                writer.add_scalar('Loss/Train/Generator', loss_G.item(), global_step)
+                writer.add_scalar('Loss/Train/Discriminator', loss_D.item(), global_step)
                 writer.add_scalar('Loss/Train/IRFD', irfd_loss.item(), global_step)
-                writer.add_scalar('Loss/Train/StyleGAN', stylegan_loss_value.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
-    return total_loss.item() / len(dataloader)
+    return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
 
 def validate(config, model, dataloader, criterion, stylegan_loss, accelerator):
@@ -157,8 +185,17 @@ def main():
 
     model = IRFD()
     
-    optimizer = AdamW(
-        model.parameters(), 
+ 
+    optimizer_G = AdamW(
+        [p for n, p in model.named_parameters() if not n.startswith('D.')], 
+        lr=config.optimization.learning_rate, 
+        betas=(config.optimization.beta1, config.optimization.beta2),
+        eps=config.optimization.eps,
+        weight_decay=config.optimization.weight_decay
+    )
+    
+    optimizer_D = AdamW(
+        model.D.parameters(), 
         lr=config.optimization.learning_rate, 
         betas=(config.optimization.beta1, config.optimization.beta2),
         eps=config.optimization.eps,
@@ -184,21 +221,23 @@ def main():
     val_dataloader = create_progressive_dataloader(config, base_dataset, 256, is_validation=True)
 
 
-    model, optimizer, train_dataloader, val_dataloader = accelerator.prepare(
-        model, optimizer, train_dataloader, val_dataloader
+    model, optimizer_G, optimizer_D, train_dataloader, val_dataloader = accelerator.prepare(
+        model, optimizer_G, optimizer_D, train_dataloader, val_dataloader
     )
 
-    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
+    scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
+    scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
     best_val_loss = float('inf')
     for epoch in range(config.training.num_epochs):
-        train_loss = train_epoch(config, model, train_dataloader, optimizer, criterion, stylegan_loss, accelerator, epoch, writer)
+        train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, stylegan_loss, accelerator, epoch, writer)
         val_loss = validate(config, model, val_dataloader, criterion, stylegan_loss, accelerator)
 
         if accelerator.is_main_process:
-            print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss = {train_loss:.4f}, val_loss = {val_loss:.4f}")
-            writer.add_scalar('Loss/Train', train_loss, epoch)
+            print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
+            writer.add_scalar('Loss/Train/Generator', train_loss_G, epoch)
+            writer.add_scalar('Loss/Train/Discriminator', train_loss_D, epoch)
             writer.add_scalar('Loss/Validation', val_loss, epoch)
 
             # Save debug images at the end of each epoch
@@ -208,22 +247,24 @@ def main():
                 x_s_recon, x_t_recon = outputs[0], outputs[1]
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, 'end', config.training.output_dir)
 
-
-        scheduler.step(val_loss)
+        scheduler_G.step(val_loss)
+        scheduler_D.step(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             if accelerator.is_main_process:
                 accelerator.save({
                     'model': accelerator.unwrap_model(model).state_dict(),
-                    'optimizer': optimizer.state_dict(),
+                    'optimizer_G': optimizer_G.state_dict(),
+                    'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
                     'config': config,
                 }, os.path.join(config.training.output_dir, "best_model.pth"))
 
-
     accelerator.end_training()
     writer.close()
+
+
 
 if __name__ == "__main__":
     main()

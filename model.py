@@ -14,6 +14,7 @@ import colored_traceback.auto
 from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
+import numpy as np
 
 class ResNetEncoder(nn.Module):
     def __init__(self, output_dim):
@@ -58,33 +59,7 @@ class AdaIN(nn.Module):
         return normalized * scale + bias
 
 
-class StyleGANDiscriminator(nn.Module):
-    def __init__(self, max_resolution, n_layers):
-        super().__init__()
-        self.layers = nn.ModuleList()
-        in_channels = 3
-        resolution = max_resolution
-        
-        for _ in range(n_layers):
-            self.layers.append(nn.Sequential(
-                spectral_norm(nn.Conv2d(in_channels, in_channels * 2, 4, 2, 1)),
-                nn.LeakyReLU(0.2)
-            ))
-            in_channels *= 2
-            resolution //= 2
-            if resolution == 4:
-                break
-        
-        self.final = nn.Sequential(
-            spectral_norm(nn.Conv2d(in_channels, in_channels, 3, 1, 1)),
-            nn.LeakyReLU(0.2),
-            spectral_norm(nn.Conv2d(in_channels, 1, 4, 1, 0))
-        )
-    
-    def forward(self, x):
-        for layer in self.layers:
-            x = layer(x)
-        return self.final(x).squeeze()
+# dont use
 class StyleGANGenerator(nn.Module):
     def __init__(self, style_dim, n_channels, max_resolution):
         super().__init__()
@@ -226,7 +201,7 @@ class CIPSGenerator(nn.Module):
         return output
 
 class IRFD(nn.Module):
-    def __init__(self):
+    def __init__(self, max_resolution=256):
         super(IRFD, self).__init__()
         
         # Encoders (keeping ResNet50 backbones)
@@ -234,16 +209,12 @@ class IRFD(nn.Module):
         self.Ee = self._create_encoder()  # Emotion encoder
         self.Ep = self._create_encoder()  # Pose encoder
         
-        # self.mapping_i = MappingNetwork(latent_dim, style_dim)
-        # self.mapping_e = MappingNetwork(latent_dim, style_dim)
-        # self.mapping_p = MappingNetwork(latent_dim, style_dim)
+        # CIPSGenerator-based generator
+        self.Gd = CIPSGenerator(input_dim=2048*3)  # 2048*3 because we're concatenating 3 encoder outputs
         
-        # StyleGAN-based generator
-        max_resolution = 256
-        n_channels = 3
-        # self.Gd = StyleGANGenerator(2048 * 3, n_channels, max_resolution)
-        # self.D = StyleGANDiscriminator(max_resolution, int(torch.log2(torch.tensor(max_resolution))) - 1)
-        self.Gd = CIPSGenerator(input_dim=2048*3) 
+        # StyleGAN Discriminator
+        self.D = StyleGANDiscriminator(max_resolution, int(np.log2(max_resolution)) - 1)
+        
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
 
     def _create_encoder(self):
@@ -273,13 +244,13 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-        # Concatenate features for generator input
-        gen_input_s = torch.cat([fi_s, fe_s, fp_s], dim=1).squeeze(-1).squeeze(-1)
-        gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
+        # Prepare generator inputs
+        gen_input_s = self._prepare_generator_input(fi_s, fe_s, fp_s)
+        gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
         
-        # Generate reconstructed images using StyleGAN-based generator
-        x_s_recon = self.Gd(gen_input_s,256)
-        x_t_recon = self.Gd(gen_input_t,256)
+        # Generate reconstructed images using CIPSGenerator
+        x_s_recon = self.Gd(gen_input_s, 256)
+        x_t_recon = self.Gd(gen_input_t, 256)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
@@ -287,6 +258,34 @@ class IRFD(nn.Module):
       
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 
+
+class StyleGANDiscriminator(nn.Module):
+    def __init__(self, max_resolution, n_layers):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        in_channels = 3
+        resolution = max_resolution
+        
+        for _ in range(n_layers):
+            self.layers.append(nn.Sequential(
+                spectral_norm(nn.Conv2d(in_channels, in_channels * 2, 4, 2, 1)),
+                nn.LeakyReLU(0.2)
+            ))
+            in_channels *= 2
+            resolution //= 2
+            if resolution == 4:
+                break
+        
+        self.final = nn.Sequential(
+            spectral_norm(nn.Conv2d(in_channels, in_channels, 3, 1, 1)),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(in_channels, 1, 4, 1, 0))
+        )
+    
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return self.final(x).squeeze()
 # StyleGAN-specific loss functions
 class StyleGANLoss(nn.Module):
     def __init__(self, device):
