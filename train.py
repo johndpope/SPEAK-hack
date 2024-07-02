@@ -238,7 +238,7 @@ def main():
         transforms.Normalize([0.5], [0.5]),
     ])
         # Load the dataset
-    base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess)
+    base_dataset = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess,True)
 
 
 
