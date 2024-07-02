@@ -8,9 +8,38 @@ from PIL import Image
 import io
 import numpy as np
 import random
+from transformers import ViTFeatureExtractor
 
 
 import os
+
+class ProgressiveDataset(Dataset):
+    def __init__(self, base_dataset, current_resolution):
+        self.base_dataset = base_dataset
+        self.current_resolution = current_resolution
+        self.feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        item = self.base_dataset[idx]
+        
+        # Resize images to current resolution
+        source_image = Image.fromarray((item["source_image"].permute(1, 2, 0).numpy() * 255).astype(np.uint8))
+        target_image = Image.fromarray((item["target_image"].permute(1, 2, 0).numpy() * 255).astype(np.uint8))
+        
+        source_image = source_image.resize((self.current_resolution, self.current_resolution))
+        target_image = target_image.resize((self.current_resolution, self.current_resolution))
+        
+        # Process with ViT feature extractor
+        source_inputs = self.feature_extractor(images=source_image, return_tensors="pt")
+        target_inputs = self.feature_extractor(images=target_image, return_tensors="pt")
+        
+        item["source_image"] = source_inputs.pixel_values.squeeze()
+        item["target_image"] = target_inputs.pixel_values.squeeze()
+        
+        return item
 
 
 class AffectNetDataset(Dataset):
@@ -21,6 +50,9 @@ class AffectNetDataset(Dataset):
         self.use_greenscreen = use_greenscreen
         self.fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
         
+        self.feature_extractor = ViTFeatureExtractor.from_pretrained('google/vit-base-patch16-224')
+
+
         # Define emotion class to index mapping
         self.emotion_class_to_idx = {str(i): i for i in range(8)}
 
@@ -47,28 +79,31 @@ class AffectNetDataset(Dataset):
         target_idx = source_idx + 1
 
         # Process source image
-        source_image_path = self.image_paths[source_idx]
-        source_image = Image.open(source_image_path).convert("RGB")
+        source_image = self.dataset[source_idx]['image'].convert("RGB")
         if self.remove_background:
             source_image = self.remove_bg(source_image)
-        source_image = self.preprocess(source_image)
-        source_emotion_idx = self.emotion_labels[source_idx]
+        source_inputs = self.feature_extractor(images=source_image, return_tensors="pt")
+        source_pixel_values = source_inputs.pixel_values.squeeze()
+        source_image_np = np.array(source_image)
+        source_emotion = self.fer.predict_emotions(source_image_np, logits=False)[0].lower()
+        source_emotion_idx = self.emotion_class_to_idx[source_emotion]
 
         # Process target image
-        target_image_path = self.image_paths[target_idx]
-        target_image = Image.open(target_image_path).convert("RGB")
+        target_image = self.dataset[target_idx]['image'].convert("RGB")
         if self.remove_background:
             target_image = self.remove_bg(target_image)
-        target_image = self.preprocess(target_image)
-        target_emotion_idx = self.emotion_labels[target_idx]
+        target_inputs = self.feature_extractor(images=target_image, return_tensors="pt")
+        target_pixel_values = target_inputs.pixel_values.squeeze()
+        target_image_np = np.array(target_image)
+        target_emotion = self.fer.predict_emotions(target_image_np, logits=False)[0].lower()
+        target_emotion_idx = self.emotion_class_to_idx[target_emotion]
 
         return {
-            "source_image": source_image,
-            "target_image": target_image,
+            "source_image": source_pixel_values,
+            "target_image": target_pixel_values,
             "emotion_labels_s": torch.tensor(source_emotion_idx, dtype=torch.long),
             "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
         }
-
 
 
 class CelebADataset(Dataset):
@@ -135,23 +170,6 @@ class CelebADataset(Dataset):
             "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
         }
 
-class ProgressiveDataset(Dataset):
-    def __init__(self, base_dataset, current_resolution):
-        self.base_dataset = base_dataset
-        self.current_resolution = current_resolution
-        self.resize_transform = transforms.Resize(current_resolution)
-
-    def __len__(self):
-        return len(self.base_dataset)
-
-    def __getitem__(self, idx):
-        item = self.base_dataset[idx]
-        
-        # Resize images to current resolution
-        item["source_image"] = self.resize_transform(item["source_image"].unsqueeze(0)).squeeze(0)
-        item["target_image"] = self.resize_transform(item["target_image"].unsqueeze(0)).squeeze(0)
-        
-        return item
 
 
 

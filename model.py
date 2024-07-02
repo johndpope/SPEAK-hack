@@ -187,34 +187,38 @@ class CIPSDiscriminator(nn.Module):
         output = self.final(features)
         
         return output.mean(dim=1)  # Average over all spatial locations
+class ViTEncoder(nn.Module):
+    def __init__(self, output_dim):
+        super().__init__()
+        self.vit = ViTModel.from_pretrained('google/vit-base-patch16-224')
+        self.fc = nn.Linear(self.vit.config.hidden_size, output_dim)
+        
+    def forward(self, x):
+        outputs = self.vit(x)
+        return self.fc(outputs.last_hidden_state[:, 0])
 
 class IRFD(nn.Module):
-    def __init__(self, max_resolution=256):
-        super(IRFD, self).__init__()
+    def __init__(self, latent_dim=512):
+        super().__init__()
+        self.Ei = ViTEncoder(latent_dim)  # Identity encoder
+        self.Ee = ViTEncoder(latent_dim)  # Emotion encoder
+        self.Ep = ViTEncoder(latent_dim)  # Pose encoder
         
-        # Encoders (keeping ResNet50 backbones)
-        self.Ei = self._create_encoder()  # Identity encoder
-        self.Ee = self._create_encoder()  # Emotion encoder
-        self.Ep = self._create_encoder()  # Pose encoder
+        # IRFD generator (you may want to keep your existing generator architecture)
+        self.Gd = nn.Sequential(
+            # Define your generator layers here
+            # This is a placeholder; you should replace it with your actual generator architecture
+            nn.Linear(latent_dim * 3, 1024),
+            nn.ReLU(),
+            nn.Linear(1024, 256 * 256 * 3),
+            nn.Tanh()
+        )
         
-        # CIPSGenerator-based generator
-        self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=64)  # 2048*3 because we're concatenating 3 encoder outputs
+        # Emotion classifier
+        self.Cm = nn.Linear(latent_dim, 8)  # 8 emotion classes
         
-        # StyleGAN Discriminator
-        self.D = CIPSDiscriminator(input_dim=3, max_resolution=64)
-        
-        self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
-
-    def _create_encoder(self):
-        encoder = resnet50(pretrained=True)
-        return nn.Sequential(*list(encoder.children())[:-1])
-    
-    def _prepare_generator_input(self, *features):
-        # Flatten and concatenate the encoder outputs
-        return torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
-    
     def forward(self, x_s, x_t):
-        # Encode source and target images
+        # Extract features
         fi_s = self.Ei(x_s)
         fe_s = self.Ee(x_s)
         fp_s = self.Ep(x_s)
@@ -223,7 +227,7 @@ class IRFD(nn.Module):
         fe_t = self.Ee(x_t)
         fp_t = self.Ep(x_t)
         
-        # Randomly swap one type of feature (keeping this functionality)
+        # Random feature swapping (keep your existing logic)
         swap_type = torch.randint(0, 3, (1,)).item()
         if swap_type == 0:
             fi_s, fi_t = fi_t, fi_s
@@ -232,19 +236,20 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-        # Prepare generator inputs
-        gen_input_s = self._prepare_generator_input(fi_s, fe_s, fp_s)
-        gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
+        # Generate reconstructed images
+        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1)).view(-1, 3, 256, 256)
+        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1)).view(-1, 3, 256, 256)
         
-        # Generate reconstructed images using CIPSGenerator
-        x_s_recon = self.Gd(gen_input_s, 64)
-        x_t_recon = self.Gd(gen_input_t, 64)
+        # Emotion predictions
+        emotion_pred_s = self.Cm(fe_s)
+        emotion_pred_t = self.Cm(fe_t)
         
-        # Apply softmax to emotion predictions
-        emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
-        emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
-      
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
+
+# Helper function to prepare input for ViT
+def prepare_vit_input(image, feature_extractor):
+    inputs = feature_extractor(images=image, return_tensors="pt")
+    return inputs.pixel_values
 
 
 # StyleGAN-specific loss functions

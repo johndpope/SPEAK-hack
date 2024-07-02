@@ -12,7 +12,7 @@ from datasets import load_dataset
 from model import IRFD, IRFDLoss, StyleGANLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
-from CelebADataset import CelebADataset,ProgressiveDataset
+from CelebADataset import CelebADataset,ProgressiveDataset,AffectNetDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
@@ -33,16 +33,10 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
     num_sets = min(16, x_s.size(0))
     save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}_resolution_{resolution}.png"), nrow=4)
 
-def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
-    
-    progressive_dataset = ProgressiveDataset(base_dataset, resolution)
 
-    # return torch.utils.data.DataLoader(
-    #     OverfitDataset('S.png', 'T.png'),
-    #     batch_size=1,
-    #     num_workers=config.training.num_workers,
-    #     pin_memory=True
-    # )
+def create_progressive_dataloader(config, resolution, is_validation=False):
+    base_dataset = AffectNetDataset(config.dataset.name, config.dataset.split)
+    progressive_dataset = ProgressiveDataset(base_dataset, resolution)
     
     # Split the dataset into training and validation
     train_size = int(0.8 * len(progressive_dataset))  # 80% for training
@@ -245,7 +239,7 @@ def main():
         transforms.Normalize([0.5], [0.5]),
     ])
         # Load the dataset
-    base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
+    base_dataset = AffectNetDataset(config.dataset.name, config.dataset.split, preprocess)
 
 
 
