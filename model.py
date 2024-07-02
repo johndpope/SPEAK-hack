@@ -200,12 +200,15 @@ class ViTEncoder(nn.Module):
         return self.fc(outputs.last_hidden_state[:, 0])
 
 class IRFD(nn.Module):
-    def __init__(self, latent_dim=512):
+    def __init__(self, latent_dim=2048):
         super().__init__()
-        self.Ei = ViTEncoder(latent_dim)  # Identity encoder
-        self.Ee = ViTEncoder(latent_dim)  # Emotion encoder
-        self.Ep = ViTEncoder(latent_dim)  # Pose encoder
+        # self.Ei = ViTEncoder(latent_dim)  # Identity encoder
+        # self.Ee = ViTEncoder(latent_dim)  # Emotion encoder
+        # self.Ep = ViTEncoder(latent_dim)  # Pose encoder
         
+        self.Ei = self._create_encoder()  # Identity encoder
+        self.Ee = self._create_encoder()  # Emotion encoder
+        self.Ep = self._create_encoder()  # Pose encoder
         # IRFD generator (you may want to keep your existing generator architecture)
         self.Gd = CIPSGenerator(input_dim=latent_dim*3,max_resolution=224)  # 2048*3 because we're concatenating 3 encoder outputs
         self.D = CIPSDiscriminator(input_dim=3, max_resolution=224)
@@ -214,6 +217,9 @@ class IRFD(nn.Module):
         # Emotion classifier
         self.Cm = nn.Linear(latent_dim, 8)  # 8 emotion classes
         
+    def _create_encoder(self):
+        encoder = resnet50(pretrained=True)
+        return nn.Sequential(*list(encoder.children())[:-1])
     def forward(self, x_s, x_t):
         # Extract features
         fi_s = self.Ei(x_s)
