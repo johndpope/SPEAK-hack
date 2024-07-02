@@ -89,7 +89,7 @@ class AffectNetDataset(Dataset):
         # source_pixel_values = source_inputs.pixel_values.squeeze()
         source_image = self.preprocess(source_image)
 
-        source_image_np = np.array(source_image)
+        source_image_np = source_image.permute(1, 2, 0).numpy()
         source_emotion = self.fer.predict_emotions(source_image_np, logits=False)[0].lower()
         source_emotion_idx = self.emotion_class_to_idx[source_emotion]
 
@@ -102,7 +102,7 @@ class AffectNetDataset(Dataset):
         # target_pixel_values = target_inputs.pixel_values.squeeze()
         target_image = self.preprocess(target_image)
 
-        target_image_np = np.array(target_image)
+        target_image_np = target_image.permute(1, 2, 0).numpy()
         target_emotion = self.fer.predict_emotions(target_image_np, logits=False)[0].lower()
         target_emotion_idx = self.emotion_class_to_idx[target_emotion]
 
