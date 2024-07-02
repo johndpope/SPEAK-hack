@@ -234,8 +234,9 @@ class IRFD(nn.Module):
             fp_s, fp_t = fp_t, fp_s
         
         # Generate reconstructed images
-        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1)).view(-1, 3, 256, 256)
-        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1)).view(-1, 3, 256, 256)
+        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1),64).view(-1, 3, 64, 64)
+        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1),64).view(-1, 3, 64, 64)
+
         
         # Emotion predictions
         emotion_pred_s = self.Cm(fe_s)
