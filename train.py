@@ -220,7 +220,7 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((512, 512)),  # Start with the highest resolution
+        transforms.Resize((64, 64)),  # Start with the highest resolution
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),

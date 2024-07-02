@@ -65,7 +65,7 @@ stylegan:
 
 loss:
   alpha: 0.1
-  lpips_weight: 0.3
+  lpips_weight: 1.0
   landmark_weight: 1.0
-  emotion_weight: 1.0
+  emotion_weight: 0
   identity_weight: 1.0
