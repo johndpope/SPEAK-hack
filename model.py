@@ -207,7 +207,7 @@ class IRFD(nn.Module):
         self.Ep = ViTEncoder(latent_dim)  # Pose encoder
         
         # IRFD generator (you may want to keep your existing generator architecture)
-        self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=64)  # 2048*3 because we're concatenating 3 encoder outputs
+        self.Gd = CIPSGenerator(input_dim=latent_dim*3,max_resolution=64)  # 2048*3 because we're concatenating 3 encoder outputs
         self.D = CIPSDiscriminator(input_dim=3, max_resolution=64)
 
         
