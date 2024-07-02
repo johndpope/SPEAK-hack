@@ -85,8 +85,10 @@ class AffectNetDataset(Dataset):
         source_image = Image.open(source_image_path).convert("RGB")
         if self.remove_background:
             source_image = self.remove_bg(source_image)
-        source_inputs = self.feature_extractor(images=source_image, return_tensors="pt")
-        source_pixel_values = source_inputs.pixel_values.squeeze()
+        # source_inputs = self.feature_extractor(images=source_image, return_tensors="pt")
+        # source_pixel_values = source_inputs.pixel_values.squeeze()
+        source_image = self.preprocess(source_image)
+
         source_image_np = np.array(source_image)
         source_emotion = self.fer.predict_emotions(source_image_np, logits=False)[0].lower()
         source_emotion_idx = self.emotion_class_to_idx[source_emotion]
@@ -96,15 +98,17 @@ class AffectNetDataset(Dataset):
         target_image = Image.open(target_image_path).convert("RGB")
         if self.remove_background:
             target_image = self.remove_bg(target_image)
-        target_inputs = self.feature_extractor(images=target_image, return_tensors="pt")
-        target_pixel_values = target_inputs.pixel_values.squeeze()
+        # target_inputs = self.feature_extractor(images=target_image, return_tensors="pt")
+        # target_pixel_values = target_inputs.pixel_values.squeeze()
+        target_image = self.preprocess(target_image)
+
         target_image_np = np.array(target_image)
         target_emotion = self.fer.predict_emotions(target_image_np, logits=False)[0].lower()
         target_emotion_idx = self.emotion_class_to_idx[target_emotion]
 
         return {
-            "source_image": source_pixel_values,
-            "target_image": target_pixel_values,
+            "source_image": source_image,
+            "target_image": target_image,
             "emotion_labels_s": torch.tensor(source_emotion_idx, dtype=torch.long),
             "emotion_labels_t": torch.tensor(target_emotion_idx, dtype=torch.long)
         }
