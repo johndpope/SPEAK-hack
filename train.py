@@ -34,8 +34,7 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
     save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}_resolution_{resolution}.png"), nrow=4)
 
 
-def create_progressive_dataloader(config, resolution, is_validation=False):
-    base_dataset = AffectNetDataset(config.dataset.name, config.dataset.split)
+def create_progressive_dataloader(config, base_dataset,resolution, is_validation=False):
     progressive_dataset = ProgressiveDataset(base_dataset, resolution)
     
     # Split the dataset into training and validation
