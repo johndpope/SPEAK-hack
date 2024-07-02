@@ -207,8 +207,8 @@ class IRFD(nn.Module):
         self.Ep = ViTEncoder(latent_dim)  # Pose encoder
         
         # IRFD generator (you may want to keep your existing generator architecture)
-        self.Gd = CIPSGenerator(input_dim=latent_dim*3,max_resolution=64)  # 2048*3 because we're concatenating 3 encoder outputs
-        self.D = CIPSDiscriminator(input_dim=3, max_resolution=64)
+        self.Gd = CIPSGenerator(input_dim=latent_dim*3,max_resolution=224)  # 2048*3 because we're concatenating 3 encoder outputs
+        self.D = CIPSDiscriminator(input_dim=3, max_resolution=224)
 
         
         # Emotion classifier
@@ -234,8 +234,8 @@ class IRFD(nn.Module):
             fp_s, fp_t = fp_t, fp_s
         
         # Generate reconstructed images
-        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1),64).view(-1, 3, 64, 64)
-        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1),64).view(-1, 3, 64, 64)
+        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1),224).view(-1, 3, 224, 224)
+        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1),224).view(-1, 3, 224, 224)
 
         
         # Emotion predictions

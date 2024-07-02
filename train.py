@@ -232,7 +232,7 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((64, 64)),  # Start with the highest resolution
+        transforms.Resize((224, 224)),  # Start with the highest resolution
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
@@ -242,8 +242,8 @@ def main():
 
 
 
-    train_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=False)
-    val_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=True)
+    train_dataloader = create_progressive_dataloader(config, base_dataset, 224, is_validation=False)
+    val_dataloader = create_progressive_dataloader(config, base_dataset, 224, is_validation=True)
 
 
     model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion = accelerator.prepare(
@@ -293,7 +293,7 @@ def main():
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
                     'config': config,
-                }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{64}-epoch-{epoch}.pth"))
+                }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{224}-epoch-{epoch}.pth"))
 
     accelerator.end_training()
     writer.close()
