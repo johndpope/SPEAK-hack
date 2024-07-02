@@ -1,0 +1,58 @@
+model:
+  sample_size: 512
+  in_channels: 3
+  out_channels: 3
+  center_input_sample: false
+  time_embedding_type: positional
+  model_channels: 192
+  channel_mult:
+  - 1
+  - 2
+  - 3
+  - 4
+  num_blocks: 3
+  attn_resolutions:
+  - 16
+  - 8
+  dropout: 0.1
+  latent_dim: 512
+  n_mlp: 8
+training:
+  output_dir: ./speak_stylegan
+  num_epochs: 100
+  train_batch_size: 2
+  eval_batch_size: 16
+  save_image_steps: 100
+  gradient_accumulation_steps: 1
+  mixed_precision: fp16
+  epochs_per_resolution: 5
+  eval_steps: 1000
+  logging_steps: 100
+  num_workers: 4
+  val_batch_size: 32
+  early_stopping_patience: 10
+  grad_clip: true
+  grad_clip_value: 1.0
+  save_epochs: 10
+  initial_resolution: 64
+  max_resolution: 512
+  label_balance: 0.5
+  stylegan_loss_weight: 0.1
+dataset:
+  name: lansinuote/gen.1.celeba
+  split: train[:80%]
+  image_size: 64
+  val_split: 0.2
+optimization:
+  learning_rate: 0.0002
+  beta1: 0.5
+  beta2: 0.999
+  eps: 1.0e-08
+  weight_decay: 0.01
+logging:
+  log_with: tensorboard
+  project_name: speak_stylegan_training
+stylegan:
+  style_dim: 512
+  n_mlp: 8
+  channel_multiplier: 2
