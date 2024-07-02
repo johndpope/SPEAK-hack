@@ -79,7 +79,8 @@ class AffectNetDataset(Dataset):
         target_idx = source_idx + 1
 
         # Process source image
-        source_image = self.dataset[source_idx]['image'].convert("RGB")
+        source_image_path = self.image_paths[source_idx]
+        source_image = Image.open(source_image_path).convert("RGB")
         if self.remove_background:
             source_image = self.remove_bg(source_image)
         source_inputs = self.feature_extractor(images=source_image, return_tensors="pt")
@@ -89,7 +90,8 @@ class AffectNetDataset(Dataset):
         source_emotion_idx = self.emotion_class_to_idx[source_emotion]
 
         # Process target image
-        target_image = self.dataset[target_idx]['image'].convert("RGB")
+        target_image_path = self.image_paths[target_idx]
+        target_image = Image.open(target_image_path).convert("RGB")
         if self.remove_background:
             target_image = self.remove_bg(target_image)
         target_inputs = self.feature_extractor(images=target_image, return_tensors="pt")
