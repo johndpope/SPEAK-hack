@@ -90,10 +90,8 @@ def train_epoch(config, model, dataloader, optimizer, criterion, stylegan_loss, 
             x_s_recon, x_t_recon = outputs[0], outputs[1]
 
             irfd_loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
-
-            fake_s = model.Gd([model.Ei(x_s).squeeze(-1).squeeze(-1)])
-            fake_t = model.Gd([model.Ei(x_t).squeeze(-1).squeeze(-1)])
-            stylegan_loss_value = stylegan_loss(x_s, fake_s) + stylegan_loss(x_t, fake_t)
+            
+            stylegan_loss_value = stylegan_loss(x_s, x_s_recon) + stylegan_loss(x_t, x_t_recon)
 
             loss = irfd_loss + config.training.stylegan_loss_weight * stylegan_loss_value
 

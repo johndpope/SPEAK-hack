@@ -13,47 +13,220 @@ from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 import colored_traceback.auto
 from transformers import Wav2Vec2Model
 import torch.nn.functional as F
+from torch.nn.utils import spectral_norm
+
+class ResNetEncoder(nn.Module):
+    def __init__(self, output_dim):
+        super().__init__()
+        resnet = resnet50(pretrained=True)
+        self.features = nn.Sequential(*list(resnet.children())[:-2])
+        self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
+        self.fc = nn.Linear(2048, output_dim)
+    
+    def forward(self, x):
+        x = self.features(x)
+        x = self.avgpool(x)
+        x = torch.flatten(x, 1)
+        return self.fc(x)
 
 class MappingNetwork(nn.Module):
-    def __init__(self, latent_dim, n_mlp):
+    def __init__(self, input_dim, style_dim, n_layers=8):
         super().__init__()
-        layers = [nn.Linear(latent_dim, latent_dim)]
-        layers.extend([nn.Linear(latent_dim, latent_dim) for _ in range(n_mlp - 1)])
-        self.mapping = nn.Sequential(*layers)
-
+        layers = []
+        dim = input_dim
+        for _ in range(n_layers):
+            layers.extend([
+                spectral_norm(nn.Linear(dim, dim)),
+                nn.LeakyReLU(0.2)
+            ])
+        self.net = nn.Sequential(*layers, nn.Linear(dim, style_dim))
+    
     def forward(self, x):
-        return self.mapping(x)
+        return self.net(x)
 
-class StyleGANGenerator(nn.Module):
-    def __init__(self, latent_dim, n_mlp, channels=32):
+class AdaIN(nn.Module):
+    def __init__(self, feature_dim, style_dim):
         super().__init__()
-        self.mapping = MappingNetwork(latent_dim, n_mlp)
-        self.input = nn.Parameter(torch.randn(1, channels, 4, 4))
-        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
-        self.to_rgb1 = nn.Conv2d(channels, 3, 1)
-        self.layers = nn.ModuleList()
-        self.to_rgbs = nn.ModuleList()
-        for i in range(3, 10):  # 8x8 to 512x512
-            in_channel = channels
-            out_channel = channels
-            self.layers.append(nn.Conv2d(in_channel, out_channel, 3, padding=1))
-            self.layers.append(nn.Conv2d(out_channel, out_channel, 3, padding=1))
-            self.to_rgbs.append(nn.Conv2d(out_channel, 3, 1))
+        self.instance_norm = nn.InstanceNorm2d(feature_dim)
+        self.style_scale = nn.Linear(style_dim, feature_dim)
+        self.style_bias = nn.Linear(style_dim, feature_dim)
+    
+    def forward(self, x, style):
+        normalized = self.instance_norm(x)
+        scale = self.style_scale(style).unsqueeze(2).unsqueeze(3)
+        bias = self.style_bias(style).unsqueeze(2).unsqueeze(3)
+        return normalized * scale + bias
 
-    def forward(self, styles, noise=None):
-        styles = [self.mapping(s) for s in styles]
-        out = self.input.repeat(styles[0].shape[0], 1, 1, 1)
-        out = self.conv1(out)
-        skip = self.to_rgb1(out)
-        for i, (conv1, conv2, to_rgb) in enumerate(zip(self.layers[::2], self.layers[1::2], self.to_rgbs)):
-            out = F.interpolate(out, scale_factor=2, mode='bilinear', align_corners=False)
-            out = conv1(out)
-            out = conv2(out)
-            skip = to_rgb(out) + F.interpolate(skip, scale_factor=2, mode='bilinear', align_corners=False)
-        return skip
+
+class StyleGANDiscriminator(nn.Module):
+    def __init__(self, max_resolution, n_layers):
+        super().__init__()
+        self.layers = nn.ModuleList()
+        in_channels = 3
+        resolution = max_resolution
+        
+        for _ in range(n_layers):
+            self.layers.append(nn.Sequential(
+                spectral_norm(nn.Conv2d(in_channels, in_channels * 2, 4, 2, 1)),
+                nn.LeakyReLU(0.2)
+            ))
+            in_channels *= 2
+            resolution //= 2
+            if resolution == 4:
+                break
+        
+        self.final = nn.Sequential(
+            spectral_norm(nn.Conv2d(in_channels, in_channels, 3, 1, 1)),
+            nn.LeakyReLU(0.2),
+            spectral_norm(nn.Conv2d(in_channels, 1, 4, 1, 0))
+        )
+    
+    def forward(self, x):
+        for layer in self.layers:
+            x = layer(x)
+        return self.final(x).squeeze()
+class StyleGANGenerator(nn.Module):
+    def __init__(self, style_dim, n_channels, max_resolution):
+        super().__init__()
+        self.const_input = nn.Parameter(torch.randn(1, n_channels, 4, 4))
+        self.style_blocks = nn.ModuleList()
+        self.to_rgb = nn.ModuleList()
+        
+        in_channels = n_channels
+        resolution = 4
+        
+        while resolution <= max_resolution:
+            self.style_blocks.append(nn.ModuleList([
+                AdaIN(in_channels, style_dim),
+                nn.Conv2d(in_channels, in_channels, 3, padding=1),
+                AdaIN(in_channels, style_dim),
+                nn.Conv2d(in_channels, in_channels * 2, 3, padding=1),
+            ]))
+            self.to_rgb.append(nn.Conv2d(in_channels * 2, 3, 1))
+            in_channels *= 2
+            resolution *= 2
+    
+    def forward(self, w, alpha=1.0):
+        x = self.const_input.repeat(w.size(0), 1, 1, 1)
+        
+        for i, (adain1, conv1, adain2, conv2) in enumerate(self.style_blocks):
+            x = adain1(x, w)
+            x = F.leaky_relu(conv1(x), 0.2)
+            x = adain2(x, w)
+            x = F.leaky_relu(conv2(x), 0.2)
+            
+            if i == len(self.style_blocks) - 1:
+                return self.to_rgb[i](x)
+            
+            if i == len(self.style_blocks) - 2:
+                upsample = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+                rgb = self.to_rgb[i](x)
+                rgb_next = self.to_rgb[i+1](upsample)
+                return (1 - alpha) * rgb + alpha * rgb_next
+            
+            x = F.interpolate(x, scale_factor=2, mode='bilinear', align_corners=False)
+
+
+class FourierFeatures(nn.Module):
+    def __init__(self, input_dim, mapping_size=256, scale=10):
+        super().__init__()
+        self.input_dim = input_dim
+        self.mapping_size = mapping_size
+        self.B = nn.Parameter(torch.randn((input_dim, mapping_size)) * scale, requires_grad=False)
+    
+    def forward(self, x):
+        x = x.matmul(self.B)
+        return torch.sin(x)
+
+class ModulatedFC(nn.Module):
+    def __init__(self, in_features, out_features, style_dim):
+        super().__init__()
+        self.fc = nn.Linear(in_features, out_features)
+        self.modulation = nn.Linear(style_dim, in_features)
+        
+    def forward(self, x, style):
+        style = self.modulation(style).unsqueeze(1)
+        x = self.fc(x * style)
+        return x
+
+class CIPSGenerator(nn.Module):
+    def __init__(self, input_dim, ngf=64, max_resolution=256, style_dim=512, num_layers=8):
+        super(CIPSGenerator, self).__init__()
+        
+        self.input_dim = input_dim
+        self.ngf = ngf
+        self.max_resolution = max_resolution
+        self.style_dim = style_dim
+        self.num_layers = num_layers
+        
+        self.mapping_network = nn.Sequential(
+            nn.Linear(input_dim, style_dim),
+            nn.ReLU(),
+            nn.Linear(style_dim, style_dim),
+            nn.ReLU(),
+            nn.Linear(style_dim, style_dim)
+        )
+        
+        self.fourier_features = FourierFeatures(2, 256)
+        self.coord_embeddings = nn.Parameter(torch.randn(1, 512, 256, 256))
+        
+        self.layers = nn.ModuleList()
+        self.to_rgb = nn.ModuleList()
+        
+        current_dim = 512 + 256  # Fourier features + coordinate embeddings
+        
+        for i in range(num_layers):
+            self.layers.append(ModulatedFC(current_dim, ngf * 8, style_dim))
+            if i % 2 == 0 or i == num_layers - 1:
+                self.to_rgb.append(ModulatedFC(ngf * 8, 3, style_dim))
+            current_dim = ngf * 8
+        
+    def get_coord_grid(self, batch_size, resolution):
+        x = torch.linspace(-1, 1, resolution)
+        y = torch.linspace(-1, 1, resolution)
+        x, y = torch.meshgrid(x, y, indexing='ij')
+        coords = torch.stack((x, y), dim=-1).unsqueeze(0).repeat(batch_size, 1, 1, 1)
+        return coords.to(next(self.parameters()).device)
+    
+    def forward(self, x, target_resolution):
+        batch_size = x.size(0)
+        
+        # Map input to style vector
+        w = self.mapping_network(x)
+        
+        # Generate coordinate grid
+        coords = self.get_coord_grid(batch_size, target_resolution)
+        coords_flat = coords.view(batch_size, -1, 2)
+        
+        # Get Fourier features and coordinate embeddings
+        fourier_features = self.fourier_features(coords_flat)
+        coord_embeddings = F.grid_sample(
+            self.coord_embeddings.expand(batch_size, -1, -1, -1),
+            coords,
+            mode='bilinear',
+            align_corners=True
+        ).permute(0, 2, 3, 1).reshape(batch_size, -1, 512)
+        
+        # Concatenate Fourier features and coordinate embeddings
+        features = torch.cat([fourier_features, coord_embeddings], dim=-1)
+        
+        rgb = 0
+        for i, (layer, to_rgb) in enumerate(zip(self.layers, self.to_rgb)):
+            features = layer(features, w)
+            features = F.leaky_relu(features, 0.2)
+            
+            if i % 2 == 0 or i == self.num_layers - 1:
+                rgb = rgb + to_rgb(features, w)
+        
+        output = torch.sigmoid(rgb).view(batch_size, target_resolution, target_resolution, 3).permute(0, 3, 1, 2)
+        
+        # Ensure output is in [-1, 1] range
+        output = (output * 2) - 1
+        
+        return output
 
 class IRFD(nn.Module):
-    def __init__(self, latent_dim=512, n_mlp=8):
+    def __init__(self):
         super(IRFD, self).__init__()
         
         # Encoders (keeping ResNet50 backbones)
@@ -61,14 +234,25 @@ class IRFD(nn.Module):
         self.Ee = self._create_encoder()  # Emotion encoder
         self.Ep = self._create_encoder()  # Pose encoder
         
+        # self.mapping_i = MappingNetwork(latent_dim, style_dim)
+        # self.mapping_e = MappingNetwork(latent_dim, style_dim)
+        # self.mapping_p = MappingNetwork(latent_dim, style_dim)
+        
         # StyleGAN-based generator
-        self.Gd = StyleGANGenerator(latent_dim, n_mlp)
-
+        max_resolution = 256
+        n_channels = 3
+        # self.Gd = StyleGANGenerator(2048 * 3, n_channels, max_resolution)
+        # self.D = StyleGANDiscriminator(max_resolution, int(torch.log2(torch.tensor(max_resolution))) - 1)
+        self.Gd = CIPSGenerator(input_dim=2048*3) 
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
 
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
+    
+    def _prepare_generator_input(self, *features):
+        # Flatten and concatenate the encoder outputs
+        return torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
     
     def forward(self, x_s, x_t):
         # Encode source and target images
@@ -94,8 +278,8 @@ class IRFD(nn.Module):
         gen_input_t = torch.cat([fi_t, fe_t, fp_t], dim=1).squeeze(-1).squeeze(-1)
         
         # Generate reconstructed images using StyleGAN-based generator
-        x_s_recon = self.Gd([gen_input_s])
-        x_t_recon = self.Gd([gen_input_t])
+        x_s_recon = self.Gd(gen_input_s,256)
+        x_t_recon = self.Gd(gen_input_t,256)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
