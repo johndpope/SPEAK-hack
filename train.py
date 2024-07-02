@@ -217,8 +217,8 @@ def main():
 
 
 
-    train_dataloader = create_progressive_dataloader(config, base_dataset, 256, is_validation=False)
-    val_dataloader = create_progressive_dataloader(config, base_dataset, 256, is_validation=True)
+    train_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=False)
+    val_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=True)
 
 
     model, optimizer_G, optimizer_D, train_dataloader, val_dataloader = accelerator.prepare(
