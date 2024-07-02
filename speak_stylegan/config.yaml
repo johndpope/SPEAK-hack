@@ -56,3 +56,9 @@ stylegan:
   style_dim: 512
   n_mlp: 8
   channel_multiplier: 2
+loss:
+  alpha: 0.1
+  lpips_weight: 0.3
+  landmark_weight: 1.0
+  emotion_weight: 1.0
+  identity_weight: 1.0

@@ -75,7 +75,7 @@ def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self
     writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion.item(), global_step)
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
 
-def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, stylegan_loss, accelerator, epoch, writer):
+def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
     total_loss_D = 0
@@ -91,7 +91,7 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             optimizer_D.zero_grad()
             
             outputs = model(x_s, x_t)
-            x_s_recon, x_t_recon = outputs[0], outputs[1]
+            x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
 
             d_real_s = model.D(x_s)
             d_real_t = model.D(x_t)
@@ -111,7 +111,10 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             # Train Generator
             optimizer_G.zero_grad()
 
-            irfd_loss, l_identity, l_cls, l_pose, l_emotion, l_self = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+            l_pose_landmark, l_emotion, l_identity, l_recon = criterion(
+                x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
+                emotion_labels_s, emotion_labels_t
+            )
             
             d_fake_s = model.D(x_s_recon)
             d_fake_t = model.D(x_t_recon)
@@ -121,7 +124,7 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 F.binary_cross_entropy_with_logits(d_fake_t, torch.ones_like(d_fake_t))
             )
 
-            loss_G = irfd_loss + config.training.stylegan_loss_weight * loss_G_adv
+            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv
 
             accelerator.backward(loss_G)
             
@@ -141,7 +144,10 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item():.4f}, loss_D = {loss_D.item():.4f}")
                 writer.add_scalar('Loss/Train/Generator', loss_G.item(), global_step)
                 writer.add_scalar('Loss/Train/Discriminator', loss_D.item(), global_step)
-                writer.add_scalar('Loss/Train/IRFD', irfd_loss.item(), global_step)
+                writer.add_scalar('Loss/Train/Pose_Landmark', l_pose_landmark.item(), global_step)
+                writer.add_scalar('Loss/Train/Emotion', l_emotion.item(), global_step)
+                writer.add_scalar('Loss/Train/Identity', l_identity.item(), global_step)
+                writer.add_scalar('Loss/Train/Reconstruction', l_recon.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
@@ -202,8 +208,15 @@ def main():
         weight_decay=config.optimization.weight_decay
     )
 
-    criterion = IRFDLoss()
-    stylegan_loss = StyleGANLoss(accelerator.device)
+    criterion = IRFDLoss(
+        alpha=config.loss.alpha,
+        lpips_weight=config.loss.lpips_weight,
+        landmark_weight=config.loss.landmark_weight,
+        emotion_weight=config.loss.emotion_weight,
+        identity_weight=config.loss.identity_weight
+    )
+
+
 
     # Set up preprocessing
     preprocess = transforms.Compose([
@@ -221,8 +234,8 @@ def main():
     val_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=True)
 
 
-    model, optimizer_G, optimizer_D, train_dataloader, val_dataloader = accelerator.prepare(
-        model, optimizer_G, optimizer_D, train_dataloader, val_dataloader
+    model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion = accelerator.prepare(
+        model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion
     )
 
     scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
@@ -231,8 +244,8 @@ def main():
 
     best_val_loss = float('inf')
     for epoch in range(config.training.num_epochs):
-        train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, stylegan_loss, accelerator, epoch, writer)
-        val_loss = validate(config, model, val_dataloader, criterion, stylegan_loss, accelerator)
+        train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
+        val_loss = validate(config, model, val_dataloader, criterion, accelerator)
 
         if accelerator.is_main_process:
             print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
@@ -263,6 +276,7 @@ def main():
 
     accelerator.end_training()
     writer.close()
+    criterion.__del__()  # Clean up MediaPipe resources
 
 
 

@@ -15,8 +15,8 @@ from transformers import Wav2Vec2Model
 import torch.nn.functional as F
 from torch.nn.utils import spectral_norm
 import numpy as np
-
-
+import mediapipe as mp
+import lpips
 
 
 class FourierFeatures(nn.Module):
@@ -258,45 +258,112 @@ class StyleGANLoss(nn.Module):
         return self.criterion(fake, torch.ones_like(fake)) + self.criterion(real, torch.zeros_like(real))
 
 
+
+#  LogSumExp Trick for Numerical Stability:
+eps = 1e-8  # Small epsilon value
+
+def safe_div(numerator, denominator):
+    return numerator / (denominator + eps)
+
+def safe_log(x):
+    return torch.log(x + eps)
+
+def stable_softmax(x):
+    shifted_x = x - x.max(dim=1, keepdim=True)[0]
+    Z = torch.sum(torch.exp(shifted_x), dim=1, keepdim=True)
+    return torch.exp(shifted_x) / Z
+
+def stable_cross_entropy(logits, targets):
+    num_classes = logits.size(1)
+    one_hot_targets = F.one_hot(targets, num_classes=num_classes)
+    stable_probs = stable_softmax(logits)
+    return -torch.sum(one_hot_targets * safe_log(stable_probs), dim=1).mean()
+
+def clip_loss(loss, min_val=-100, max_val=100):
+    return torch.clamp(loss, min=min_val, max=max_val)
+
+class ScaledMSELoss(nn.Module):
+    def __init__(self, scale=1.0):
+        super().__init__()
+        self.scale = scale
+        self.mse = nn.MSELoss()
+
+    def forward(self, input, target):
+        return self.mse(input * self.scale, target * self.scale)
+
 class IRFDLoss(nn.Module):
-    def __init__(self, alpha=0.1):
+    def __init__(self, alpha=0.1, lpips_weight=0.3, landmark_weight=1.0, emotion_weight=1.0, identity_weight=1.0):
         super(IRFDLoss, self).__init__()
         self.alpha = alpha
-        self.l2_loss = nn.MSELoss()
-        self.ce_loss = nn.CrossEntropyLoss()
-    
-    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t, emotion_labels_s, emotion_labels_t):
-        # Ensure all images have the same size
-        x_s = F.interpolate(x_s, size=x_s_recon.shape[2:], mode='bilinear', align_corners=False)
-        x_t = F.interpolate(x_t, size=x_t_recon.shape[2:], mode='bilinear', align_corners=False)
+        self.lpips_weight = lpips_weight
+        self.landmark_weight = landmark_weight
+        self.emotion_weight = emotion_weight
+        self.identity_weight = identity_weight
+        self.l2_loss = ScaledMSELoss(scale=0.1)
+        self.ce_loss = stable_cross_entropy
+        self.lpips_loss = lpips.LPIPS(net='vgg')
 
-# Ensure all inputs have the same batch size
-        batch_size = x_s.size(0)
+        # Initialize MediaPipe face mesh
+        self.mp_face_mesh = mp.solutions.face_mesh
+        self.face_mesh = self.mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
+
+    def detect_landmarks(self, images):
+        batch_size = images.size(0)
+        landmarks_batch = []
+
+        for i in range(batch_size):
+            image = images[i]
+            image_np = (image.detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            results = self.face_mesh.process(image_np)
+            if results.multi_face_landmarks:
+                landmarks = np.array([(lm.x, lm.y, lm.z) for lm in results.multi_face_landmarks[0].landmark])
+                landmarks_batch.append(torch.tensor(landmarks, device=images.device))
+            else:
+                landmarks_batch.append(None)
+
+        return landmarks_batch
+
+    def landmark_loss(self, x_real, x_recon):
+        landmarks_real = self.detect_landmarks(x_real)
+        landmarks_recon = self.detect_landmarks(x_recon)
         
-        # Reshape emotion predictions and labels if necessary
-        emotion_pred_s = emotion_pred_s.view(batch_size, -1)
-        emotion_pred_t = emotion_pred_t.view(batch_size, -1)
-        emotion_labels_s = emotion_labels_s.view(batch_size)
-        emotion_labels_t = emotion_labels_t.view(batch_size)
-        # Identity loss
-        l_identity = torch.max(
-            self.l2_loss(fi_s, fi_t) - self.l2_loss(fi_s, fi_s) + self.alpha,
-            torch.tensor(0.0).to(fi_s.device)
-        )
+        losses = []
+        for lm_real, lm_recon in zip(landmarks_real, landmarks_recon):
+            if lm_real is not None and lm_recon is not None:
+                losses.append(F.mse_loss(lm_real, lm_recon))
+            else:
+                losses.append(torch.tensor(0.0, device=x_real.device))
         
-        # Classification loss
-        l_cls = self.ce_loss(emotion_pred_s, emotion_labels_s) + self.ce_loss(emotion_pred_t, emotion_labels_t)
-        
-        # Pose loss
-        l_pose = self.l2_loss(fp_s, fp_t)
-        
-        # Emotion loss
-        l_emotion = self.l2_loss(fe_s, fe_t)
-        
-        # Self-reconstruction loss
+        return torch.stack(losses).mean()
+
+    def identity_loss(self, fi_s, fi_t):
+        return self.l2_loss(fi_s, fi_t) * self.identity_weight
+
+    def emotion_loss(self, fe_s, fe_t, emotion_labels_s, emotion_labels_t):
+        emotion_pred_s = torch.softmax(fe_s, dim=1)
+        emotion_pred_t = torch.softmax(fe_t, dim=1)
+        loss_s = self.ce_loss(emotion_pred_s, emotion_labels_s)
+        loss_t = self.ce_loss(emotion_pred_t, emotion_labels_t)
+        return (loss_s + loss_t) * self.emotion_weight
+
+    def pose_loss(self, fp_s, fp_t):
+        return self.l2_loss(fp_s, fp_t) * self.landmark_weight
+
+    def reconstruction_loss(self, x_s, x_t, x_s_recon, x_t_recon):
         l_self = self.l2_loss(x_s, x_s_recon) + self.l2_loss(x_t, x_t_recon)
-        
-        # Total loss
-        total_loss = l_identity + l_cls + l_pose + l_emotion + l_self
-        
-        return total_loss, l_identity, l_cls, l_pose, l_emotion, l_self
+        l_lpips = (self.lpips_loss(x_s, x_s_recon).mean() + 
+                   self.lpips_loss(x_t, x_t_recon).mean()) * self.lpips_weight
+        return l_self + l_lpips
+
+    def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t):
+        l_identity = self.identity_loss(fi_s, fi_t)
+        l_emotion = self.emotion_loss(fe_s, fe_t, emotion_labels_s, emotion_labels_t)
+        l_pose = self.pose_loss(fp_s, fp_t)
+        l_landmark = self.landmark_loss(x_s, x_s_recon) + self.landmark_loss(x_t, x_t_recon)
+        l_recon = self.reconstruction_loss(x_s, x_t, x_s_recon, x_t_recon)
+
+        return l_pose + l_landmark, l_emotion, l_identity, l_recon
+
+    def __del__(self):
+        # Clean up MediaPipe resources
+        self.face_mesh.close()
