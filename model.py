@@ -220,6 +220,11 @@ class IRFD(nn.Module):
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
         return nn.Sequential(*list(encoder.children())[:-1])
+    
+    def _prepare_generator_input(self, *features):
+        # Flatten and concatenate the encoder outputs
+        return torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
+    
     def forward(self, x_s, x_t):
         # Extract features
         fi_s = self.Ei(x_s)
@@ -239,10 +244,14 @@ class IRFD(nn.Module):
         else:
             fp_s, fp_t = fp_t, fp_s
         
-        # Generate reconstructed images
-        x_s_recon = self.Gd(torch.cat([fi_s, fe_s, fp_s], dim=1),224).view(-1, 3, 224, 224)
-        x_t_recon = self.Gd(torch.cat([fi_t, fe_t, fp_t], dim=1),224).view(-1, 3, 224, 224)
 
+      # Prepare generator inputs
+        gen_input_s = self._prepare_generator_input(fi_s, fe_s, fp_s)
+        gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
+        
+        # Generate reconstructed images using CIPSGenerator
+        x_s_recon = self.Gd(gen_input_s, 64)
+        x_t_recon = self.Gd(gen_input_t, 64)
         
         # Emotion predictions
         emotion_pred_s = self.Cm(fe_s)
