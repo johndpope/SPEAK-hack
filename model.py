@@ -17,6 +17,8 @@ from torch.nn.utils import spectral_norm
 import numpy as np
 import mediapipe as mp
 import lpips
+from transformers import ViTFeatureExtractor, ViTModel
+# from torchvision.models import vit_b_16
 
 
 class FourierFeatures(nn.Module):
