@@ -23,6 +23,12 @@ https://github.com/neeek2303/FEED
 
 
 
+**Affectnet** - use this 
+https://www.kaggle.com/datasets/thienkhonghoc/affectnet
+
+
+
+
 Inter-Reconstructed Feature disentanglement(IRFD)
 
 ![screenshot](fig2.png)
