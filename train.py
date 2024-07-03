@@ -208,7 +208,7 @@ def main():
         os.makedirs(config.training.output_dir, exist_ok=True)
         OmegaConf.save(config, os.path.join(config.training.output_dir, "config.yaml"))
 
-    model = IRFD(maximum_resolution=64)
+    model = IRFD(max_resolution=256)
     
  
     optimizer_G = AdamW(
@@ -270,38 +270,48 @@ def main():
     scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
-    # Load checkpoint if found
-    if latest_checkpoint:
-        checkpoint = torch.load(latest_checkpoint, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])  # This will now use the custom load_state_dict method
-        optimizer_G.load_state_dict(checkpoint['optimizer_G'])
-        optimizer_D.load_state_dict(checkpoint['optimizer_D'])
-        start_epoch = checkpoint['epoch'] + 1
-        print(f"📊 Restored checkpoint from epoch {start_epoch}")
+    resolutions = [64, 128, 256]
+    epochs_per_resolution = config.training.num_epochs // len(resolutions)
 
-    best_val_loss = float('inf')
-    for epoch in range(start_epoch, config.training.num_epochs):
-        resolutions = [64, 128, 256]
-        epochs_per_resolution = config.training.num_epochs // len(resolutions)
+    for resolution in resolutions:
+        print(f"Training at resolution: {resolution}x{resolution}")
+        model.adjust_for_resolution(resolutions[resolutions.index(resolution)])
 
+        # Update dataset and dataloaders for the current resolution
+        base_dataset = CelebADataset(config.dataset.name, config.dataset.split, transforms.Compose([
+            transforms.Resize((resolution, resolution)),
+            transforms.RandomHorizontalFlip(),
+            transforms.ToTensor(),
+            transforms.Normalize([0.5], [0.5]),
+        ]))
+
+        train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
+        val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
+
+        model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion = accelerator.prepare(
+            model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion
+        )
+
+        scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
+        scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
+
+        best_val_loss = float('inf')
         for epoch in range(epochs_per_resolution):
-            train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
-
             train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
             val_loss = validate(config, model, val_dataloader, criterion, accelerator)
 
             if accelerator.is_main_process:
-                print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
-                writer.add_scalar('Loss/Train/Generator', train_loss_G, epoch)
-                writer.add_scalar('Loss/Train/Discriminator', train_loss_D, epoch)
-                writer.add_scalar('Loss/Validation', val_loss, epoch)
+                print(f"Resolution: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
+                writer.add_scalar(f'Loss/Train/Generator/Resolution_{resolution}', train_loss_G, epoch)
+                writer.add_scalar(f'Loss/Train/Discriminator/Resolution_{resolution}', train_loss_D, epoch)
+                writer.add_scalar(f'Loss/Validation/Resolution_{resolution}', val_loss, epoch)
 
-                # Save debug images at the end of each epoch
+                # Save debug images
                 with torch.no_grad():
-                    x_s, x_t = next(iter(val_dataloader))
+                    x_s, x_t = next(iter(val_dataloader))["source_image"], next(iter(val_dataloader))["target_image"]
                     outputs = model(x_s, x_t)
                     x_s_recon, x_t_recon = outputs[0], outputs[1]
-                    save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, 'end', config.training.output_dir)
+                    save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, resolution, config.training.output_dir)
 
             scheduler_G.step(val_loss)
             scheduler_D.step(val_loss)
@@ -314,17 +324,15 @@ def main():
                         'optimizer_G': optimizer_G.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(),
                         'epoch': epoch,
+                        'resolution': resolution,
                         'config': config,
-                    }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{64}-epoch-{epoch}.pth"))
-            # Adjust model for next resolution if necessary
-        if resolution < resolutions[-1]:
-            model.adjust_for_resolution(next_resolution)
+                    }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch}.pth"))
+
+            
 
     accelerator.end_training()
     writer.close()
     criterion.__del__()  # Clean up MediaPipe resources
-
-
 
 if __name__ == "__main__":
     main()
