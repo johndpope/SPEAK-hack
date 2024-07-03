@@ -17,6 +17,7 @@ from torch.nn.utils import spectral_norm
 import numpy as np
 import mediapipe as mp
 import lpips
+from torch.utils.checkpoint import checkpoint
 
 
 class FourierFeatures(nn.Module):
@@ -205,17 +206,21 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
         # CIPSGenerator-based generator
-        self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=64)  # 2048*3 because we're concatenating 3 encoder outputs
+        self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
         
         # StyleGAN Discriminator
-        self.D = CIPSDiscriminator(input_dim=3, max_resolution=64)
+        self.D = CIPSDiscriminator(input_dim=3, max_resolution=max_resolution)
         
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
         
+        self.max_resolution = max_resolution
     def get_state_dict(self):
         state_dict = self.state_dict()
         state_dict['Gd_fourier_state'] = self.Gd.get_fourier_state()
         return state_dict
+
+    def adjust_for_resolution(self,resolution):
+        self.max_resolution = resolution
 
     def load_state_dict(self, state_dict):
         fourier_state = state_dict.pop('Gd_fourier_state', None)
@@ -233,13 +238,14 @@ class IRFD(nn.Module):
     
     def forward(self, x_s, x_t):
         # Encode source and target images
-        fi_s = self.Ei(x_s)
-        fe_s = self.Ee(x_s)
-        fp_s = self.Ep(x_s)
+        # Use checkpoint for memory-intensive operations
+        fi_s = checkpoint(self.Ei, x_s)
+        fe_s = checkpoint(self.Ee, x_s)
+        fp_s = checkpoint(self.Ep, x_s)
         
-        fi_t = self.Ei(x_t)
-        fe_t = self.Ee(x_t)
-        fp_t = self.Ep(x_t)
+        fi_t = checkpoint(self.Ei, x_t)
+        fe_t = checkpoint(self.Ee, x_t)
+        fp_t = checkpoint(self.Ep, x_t)
         
         # Randomly swap one type of feature (keeping this functionality)
         swap_type = torch.randint(0, 3, (1,)).item()
@@ -255,8 +261,8 @@ class IRFD(nn.Module):
         gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
         
         # Generate reconstructed images using CIPSGenerator
-        x_s_recon = self.Gd(gen_input_s, 64)
-        x_t_recon = self.Gd(gen_input_t, 64)
+        x_s_recon = self.Gd(gen_input_s, self.max_resolution)
+        x_t_recon = self.Gd(gen_input_t, self.max_resolution)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)

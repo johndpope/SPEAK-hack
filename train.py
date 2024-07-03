@@ -63,7 +63,9 @@ def create_progressive_dataloader(config, base_dataset, resolution, is_validatio
         batch_size=batch_size,
         shuffle=shuffle,
         num_workers=config.training.num_workers,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True,
+        prefetch_factor=2
     )
 
 
@@ -171,9 +173,10 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
 
-def validate(config, model, dataloader, criterion, stylegan_loss, accelerator):
+def validate(config, model, dataloader, criterion,  accelerator):
     model.eval()
     total_loss = 0
+    stylegan_loss = StyleGANLoss()
     with torch.no_grad():
         for batch in dataloader:
             x_s, x_t = batch["source_image"], batch["target_image"]
@@ -205,7 +208,7 @@ def main():
         os.makedirs(config.training.output_dir, exist_ok=True)
         OmegaConf.save(config, os.path.join(config.training.output_dir, "config.yaml"))
 
-    model = IRFD()
+    model = IRFD(maximum_resolution=64)
     
  
     optimizer_G = AdamW(
@@ -278,38 +281,44 @@ def main():
 
     best_val_loss = float('inf')
     for epoch in range(start_epoch, config.training.num_epochs):
-        train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
-        val_loss = validate(config, model, val_dataloader, criterion, train_loss_G,accelerator)
+        resolutions = [64, 128, 256]
+        epochs_per_resolution = config.training.num_epochs // len(resolutions)
 
+        for epoch in range(epochs_per_resolution):
+            train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
 
+            train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
+            val_loss = validate(config, model, val_dataloader, criterion, accelerator)
 
-
-        if accelerator.is_main_process:
-            print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
-            writer.add_scalar('Loss/Train/Generator', train_loss_G, epoch)
-            writer.add_scalar('Loss/Train/Discriminator', train_loss_D, epoch)
-            writer.add_scalar('Loss/Validation', val_loss, epoch)
-
-            # Save debug images at the end of each epoch
-            with torch.no_grad():
-                x_s, x_t = next(iter(val_dataloader))
-                outputs = model(x_s, x_t)
-                x_s_recon, x_t_recon = outputs[0], outputs[1]
-                save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, 'end', config.training.output_dir)
-
-        scheduler_G.step(val_loss)
-        scheduler_D.step(val_loss)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
             if accelerator.is_main_process:
-                accelerator.save({
-                    'model': accelerator.unwrap_model(model).state_dict(),
-                    'optimizer_G': optimizer_G.state_dict(),
-                    'optimizer_D': optimizer_D.state_dict(),
-                    'epoch': epoch,
-                    'config': config,
-                }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{64}-epoch-{epoch}.pth"))
+                print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
+                writer.add_scalar('Loss/Train/Generator', train_loss_G, epoch)
+                writer.add_scalar('Loss/Train/Discriminator', train_loss_D, epoch)
+                writer.add_scalar('Loss/Validation', val_loss, epoch)
+
+                # Save debug images at the end of each epoch
+                with torch.no_grad():
+                    x_s, x_t = next(iter(val_dataloader))
+                    outputs = model(x_s, x_t)
+                    x_s_recon, x_t_recon = outputs[0], outputs[1]
+                    save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, 'end', config.training.output_dir)
+
+            scheduler_G.step(val_loss)
+            scheduler_D.step(val_loss)
+
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                if accelerator.is_main_process:
+                    accelerator.save({
+                        'model': accelerator.unwrap_model(model).state_dict(),
+                        'optimizer_G': optimizer_G.state_dict(),
+                        'optimizer_D': optimizer_D.state_dict(),
+                        'epoch': epoch,
+                        'config': config,
+                    }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{64}-epoch-{epoch}.pth"))
+            # Adjust model for next resolution if necessary
+        if resolution < resolutions[-1]:
+            model.adjust_for_resolution(next_resolution)
 
     accelerator.end_training()
     writer.close()
