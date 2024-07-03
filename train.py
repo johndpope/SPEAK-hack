@@ -173,10 +173,10 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
 
-def validate(config, model, dataloader, criterion,  accelerator):
+def validate(config, model, dataloader, criterion,  accelerator,stylegan_loss):
     model.eval()
     total_loss = 0
-    stylegan_loss = StyleGANLoss()
+  
     with torch.no_grad():
         for batch in dataloader:
             x_s, x_t = batch["source_image"], batch["target_image"]
@@ -266,6 +266,7 @@ def main():
         model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion
     )
 
+    stylegan_loss = StyleGANLoss(accelerator.device)
     scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
@@ -298,7 +299,7 @@ def main():
         best_val_loss = float('inf')
         for epoch in range(epochs_per_resolution):
             train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
-            val_loss = validate(config, model, val_dataloader, criterion, accelerator)
+            val_loss = validate(config, model, val_dataloader, criterion, accelerator,stylegan_loss)
 
             if accelerator.is_main_process:
                 print(f"Resolution: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
