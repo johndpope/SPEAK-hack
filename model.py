@@ -142,6 +142,13 @@ class CIPSDiscriminator(nn.Module):
         
         self.final = nn.Linear(current_dim, 1)
     
+    def get_fourier_state(self):
+        return self.fourier_features.B.data
+
+    def set_fourier_state(self, state):
+        self.fourier_features.B.data = state
+
+
     def get_coord_grid(self, batch_size, resolution):
         x = torch.linspace(-1, 1, resolution)
         y = torch.linspace(-1, 1, resolution)
@@ -204,6 +211,17 @@ class IRFD(nn.Module):
         self.D = CIPSDiscriminator(input_dim=3, max_resolution=64)
         
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
+        
+    def get_state_dict(self):
+        state_dict = self.state_dict()
+        state_dict['Gd_fourier_state'] = self.Gd.get_fourier_state()
+        return state_dict
+
+    def load_state_dict(self, state_dict):
+        fourier_state = state_dict.pop('Gd_fourier_state', None)
+        super().load_state_dict(state_dict)
+        if fourier_state is not None:
+            self.Gd.set_fourier_state(fourier_state)
 
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)

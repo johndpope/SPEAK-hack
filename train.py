@@ -153,14 +153,20 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
 
-            if global_step % config.training.save_steps == 0:
-                  accelerator.save({
-                    'model': accelerator.unwrap_model(model).state_dict(),
+            # In train.py, modify the saving part:
+            if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
+                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-256-epoch-{epoch+1}")
+        
+                # In train.py, modify the saving part:
+                accelerator.save({
+                    'model': accelerator.unwrap_model(model).get_state_dict(),  # Use the new method
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
                     'config': config,
-                }, os.path.join(config.training.output_dir, "best_model.pth"))
+                }, os.path.join(config.training.output_dir, save_path))
+
+
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
@@ -230,7 +236,7 @@ def main():
     start_epoch = 0
     latest_checkpoint = None
     if os.path.exists(config.training.output_dir):
-        checkpoints = [f for f in os.listdir(config.training.output_dir) if f.startswith("checkpoint-resolution-")]
+        checkpoints = [f for f in os.listdir(config.training.output_dir) if f.startswith("best_model")]
         if checkpoints:
             latest_checkpoint = max(checkpoints, key=lambda x: os.path.getmtime(os.path.join(config.training.output_dir, x)))
             latest_checkpoint = os.path.join(config.training.output_dir, latest_checkpoint)
@@ -261,10 +267,10 @@ def main():
     scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
-        # Load checkpoint if found
+    # Load checkpoint if found
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location='cpu')
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model'])  # This will now use the custom load_state_dict method
         optimizer_G.load_state_dict(checkpoint['optimizer_G'])
         optimizer_D.load_state_dict(checkpoint['optimizer_D'])
         start_epoch = checkpoint['epoch'] + 1
@@ -273,7 +279,10 @@ def main():
     best_val_loss = float('inf')
     for epoch in range(start_epoch, config.training.num_epochs):
         train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
-        val_loss = validate(config, model, val_dataloader, criterion, accelerator)
+        val_loss = validate(config, model, val_dataloader, criterion, train_loss_G,accelerator)
+
+
+
 
         if accelerator.is_main_process:
             print(f"Epoch {epoch+1}/{config.training.num_epochs}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
