@@ -74,6 +74,12 @@ class CIPSGenerator(nn.Module):
                 self.to_rgb.append(ModulatedFC(ngf * 8, 3, style_dim))
             current_dim = ngf * 8
         
+    def get_fourier_state(self):
+        return self.fourier_features.B.data
+
+    def set_fourier_state(self, state):
+        self.fourier_features.B.data = state
+
     def get_coord_grid(self, batch_size, resolution):
         x = torch.linspace(-1, 1, resolution)
         y = torch.linspace(-1, 1, resolution)
@@ -143,11 +149,6 @@ class CIPSDiscriminator(nn.Module):
         
         self.final = nn.Linear(current_dim, 1)
     
-    def get_fourier_state(self):
-        return self.fourier_features.B.data
-
-    def set_fourier_state(self, state):
-        self.fourier_features.B.data = state
 
 
     def get_coord_grid(self, batch_size, resolution):
