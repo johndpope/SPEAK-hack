@@ -1,0 +1,62 @@
+model:
+  sample_size: 512
+  in_channels: 3
+  out_channels: 3
+  center_input_sample: false
+  time_embedding_type: positional
+  model_channels: 192
+  channel_mult:
+  - 1
+  - 2
+  - 3
+  - 4
+  num_blocks: 3
+  attn_resolutions:
+  - 16
+  - 8
+  dropout: 0.1
+  label_balance: 0.5
+  concat_balance: 0.5
+training:
+  output_dir: ./speak
+  num_epochs: 100
+  train_batch_size: 2
+  eval_batch_size: 16
+  save_image_steps: 1000
+  gradient_accumulation_steps: 1
+  mixed_precision: fp16
+  epochs_per_resolution: 1
+  eval_steps: 1000
+  logging_steps: 100
+  P_mean: -0.4
+  P_std: 1.0
+  sigma_data: 0.5
+  num_workers: 1
+  val_batch_size: 32
+  early_stopping_patience: 10
+  grad_clip: true
+  grad_clip_value: 1.0
+  save_epochs: 1000
+  log_steps: 100
+dataset:
+  name: lansinuote/gen.1.celeba
+  split: train[:80%]
+  image_size: 64
+  val_split: 0.2
+optimization:
+  learning_rate: 0.001
+  beta1: 0.9
+  beta2: 0.999
+  eps: 1.0e-08
+  weight_decay: 0.01
+sampling:
+  num_inference_steps: 50
+  guidance_scale: 7.5
+logging:
+  log_with: tensorboard
+  project_name: speak_training
+sampler:
+  num_steps: 32
+  sigma_min: 0.002
+  sigma_max: 80
+  rho: 7
