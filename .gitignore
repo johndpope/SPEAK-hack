@@ -4,6 +4,7 @@
 *.pkl
 *.pt
 __pycache__/*
+__pycache__/*.*
 *.pyc
 *.0
 speak/output_images/*.png
