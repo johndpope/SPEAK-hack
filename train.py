@@ -420,7 +420,13 @@ def main():
     ])
 
     def get_base_dataset(preprocess):
-        test = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess,True)
+        test =  AffectNetDataset(
+            root_dir="/media/oem/12TB/AffectNet/train",
+            preprocess=preprocess,
+            remove_background=True,
+            use_greenscreen=False,
+            cache_dir='/media/oem/12TB/AffectNet/train/cache'
+        )
         return test
         # return CelebADataset(config.dataset.name, config.dataset.split, preprocess)
 

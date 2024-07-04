@@ -13,13 +13,25 @@ import random
 import os
 
 
+import os
+import torch
+from torch.utils.data import Dataset
+from PIL import Image
+import io
+from rembg import remove
+import hashlib
+
 class AffectNetDataset(Dataset):
-    def __init__(self, root_dir, preprocess, remove_background=False, use_greenscreen=False):
+    def __init__(self, root_dir, preprocess, remove_background=False, use_greenscreen=False, cache_dir=None):
         self.root_dir = os.path.join(root_dir)
         self.preprocess = preprocess
         self.remove_background = remove_background
         self.use_greenscreen = use_greenscreen
         self.fer = HSEmotionRecognizer(model_name='enet_b0_8_va_mtl')
+        self.cache_dir = cache_dir
+        
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
         
         # Define emotion class to index mapping
         self.emotion_class_to_idx = {str(i): i for i in range(8)}
@@ -33,28 +45,37 @@ class AffectNetDataset(Dataset):
                 if img_file.endswith(('.png', '.jpg', '.jpeg')):
                     self.image_paths.append(os.path.join(emotion_dir, img_file))
                     self.emotion_labels.append(emotion_label)
-        
+    
     def __len__(self):
-        # return 100
         return len(self.image_paths) // 2  # We're processing pairs of images
 
-    def remove_bg(self, image):
+    def get_cache_path(self, image_path):
+        if not self.cache_dir:
+            return None
+        image_hash = hashlib.md5(image_path.encode()).hexdigest()
+        return os.path.join(self.cache_dir, f"{image_hash}.png")
+
+    def remove_bg(self, image, cache_path=None):
+        if cache_path and os.path.exists(cache_path):
+            return Image.open(cache_path).convert("RGB")
+
         img_byte_arr = io.BytesIO()
         image.save(img_byte_arr, format='PNG')
         img_byte_arr = img_byte_arr.getvalue()
         bg_removed_bytes = remove(img_byte_arr)
-        bg_removed_image = Image.open(io.BytesIO(bg_removed_bytes)).convert("RGBA")  # Use RGBA to keep transparency
+        bg_removed_image = Image.open(io.BytesIO(bg_removed_bytes)).convert("RGBA")
 
         if self.use_greenscreen:
-            # Create a green screen background
-            # green_screen = Image.new("RGBA", bg_removed_image.size, (0, 255, 0, 255))  # Green color
             black_screen = Image.new("RGB", bg_removed_image.size, (0, 0, 0))
-            # Composite the image onto the green screen
-            final_image = Image.alpha_composite(black_screen, bg_removed_image)
+            final_image = Image.alpha_composite(black_screen.convert("RGBA"), bg_removed_image)
         else:
             final_image = bg_removed_image
 
-        final_image = final_image.convert("RGB")  # Convert to RGB format
+        final_image = final_image.convert("RGB")
+
+        if cache_path:
+            final_image.save(cache_path)
+
         return final_image
 
     def __getitem__(self, idx):
@@ -64,17 +85,19 @@ class AffectNetDataset(Dataset):
 
         # Process source image
         source_image_path = self.image_paths[source_idx]
+        source_cache_path = self.get_cache_path(source_image_path) if self.remove_background else None
         source_image = Image.open(source_image_path).convert("RGB")
         if self.remove_background:
-            source_image = self.remove_bg(source_image)
+            source_image = self.remove_bg(source_image, source_cache_path)
         source_image = self.preprocess(source_image)
         source_emotion_idx = self.emotion_labels[source_idx]
 
         # Process target image
         target_image_path = self.image_paths[target_idx]
+        target_cache_path = self.get_cache_path(target_image_path) if self.remove_background else None
         target_image = Image.open(target_image_path).convert("RGB")
         if self.remove_background:
-            target_image = self.remove_bg(target_image)
+            target_image = self.remove_bg(target_image, target_cache_path)
         target_image = self.preprocess(target_image)
         target_emotion_idx = self.emotion_labels[target_idx]
 
