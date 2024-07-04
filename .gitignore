@@ -3,12 +3,10 @@
 *.bin
 *.pkl
 *.pt
-__pycache__/model.cpython-311.pyc
+__pycache__/*
 *.pyc
 *.0
 speak/output_images/*.png
-__pycache__/model.cpython-311.pyc
-__pycache__/model.cpython-311.pyc
-__pycache__/model.cpython-311.pyc
+model.cpython-311.pyc
 *.png
 CIPS/ffhq1024_g_ema.zip
