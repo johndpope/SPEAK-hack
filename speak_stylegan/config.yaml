@@ -39,6 +39,7 @@ training:
   max_resolution: 512
   label_balance: 0.5
   stylegan_loss_weight: 0.1
+  gp_weight: 10.0
 dataset:
   name: lansinuote/gen.1.celeba
   split: train[:80%]

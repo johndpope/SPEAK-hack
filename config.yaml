@@ -36,7 +36,7 @@ training:
   max_resolution: 512  # Maximum resolution for progressive growing
   label_balance: 0.5  # Balance between IRFD loss and StyleGAN loss
   stylegan_loss_weight: 0.1  # Weight for StyleGAN loss
-
+  gp_weight: 10.0
 # Dataset configuration
 dataset:
   name: "lansinuote/gen.1.celeba"

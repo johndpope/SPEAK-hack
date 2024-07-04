@@ -124,6 +124,7 @@ class CIPSGenerator(nn.Module):
         
         return output
 
+        
 class CIPSDiscriminator(nn.Module):
     def __init__(self, input_dim=3, ndf=64, max_resolution=256, num_layers=8):
         super(CIPSDiscriminator, self).__init__()
@@ -149,8 +150,6 @@ class CIPSDiscriminator(nn.Module):
         
         self.final = nn.Linear(current_dim, 1)
     
-
-
     def get_coord_grid(self, batch_size, resolution):
         x = torch.linspace(-1, 1, resolution)
         y = torch.linspace(-1, 1, resolution)
@@ -195,7 +194,49 @@ class CIPSDiscriminator(nn.Module):
         # Final prediction
         output = self.final(features)
         
-        return output.mean(dim=1)  # Average over all spatial locations
+        return output  # Return raw output without averaging
+
+
+
+class AxialAttention(nn.Module):
+    def __init__(self, in_channels, out_channels, heads=8, dim_head=64):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.heads = heads
+        self.dim_head = dim_head
+
+        self.to_qkv = nn.Linear(in_channels, heads * dim_head * 3, bias=False)
+        self.to_out = nn.Linear(heads * dim_head, out_channels)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        x = x.permute(0, 2, 3, 1).contiguous()  # b, h, w, c
+
+        qkv = self.to_qkv(x).chunk(3, dim=-1)
+        q, k, v = map(lambda t: t.reshape(b, h * w, self.heads, self.dim_head).transpose(1, 2), qkv)
+
+        dots = torch.matmul(q, k.transpose(-1, -2)) * (self.dim_head ** -0.5)
+        attn = dots.softmax(dim=-1)
+        out = torch.matmul(attn, v)
+
+        out = out.transpose(1, 2).reshape(b, h, w, self.heads * self.dim_head)
+        out = self.to_out(out)
+        return out.permute(0, 3, 1, 2).contiguous()  # b, c, h, w
+
+class AxialFeatureSelector(nn.Module):
+    def __init__(self, in_channels, out_channels):
+        super().__init__()
+        self.height_attn = AxialAttention(in_channels, out_channels)
+        self.width_attn = AxialAttention(out_channels, out_channels)
+        self.channel_mixer = nn.Conv2d(out_channels, out_channels, kernel_size=1)
+
+    def forward(self, x):
+        x = self.height_attn(x)
+        x = self.width_attn(x)
+        x = self.channel_mixer(x)
+        return x
+
 
 class IRFD(nn.Module):
     def __init__(self, max_resolution=256):
@@ -206,6 +247,13 @@ class IRFD(nn.Module):
         self.Ee = self._create_encoder()  # Emotion encoder
         self.Ep = self._create_encoder()  # Pose encoder
         
+
+        input_dim=2048
+          # Axial Attention Feature Selectors
+        self.axial_identity = AxialFeatureSelector(input_dim, input_dim)
+        self.axial_emotion = AxialFeatureSelector(input_dim, input_dim)
+        self.axial_pose = AxialFeatureSelector(input_dim, input_dim)
+
         # CIPSGenerator-based generator
         self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
         
@@ -248,6 +296,16 @@ class IRFD(nn.Module):
         fi_t = checkpoint(self.Ei, x_t)
         fe_t = checkpoint(self.Ee, x_t)
         fp_t = checkpoint(self.Ep, x_t)
+
+
+        # Apply axial attention feature selection
+        fi_s = self.axial_identity(fi_s)
+        fe_s = self.axial_emotion(fe_s)
+        fp_s = self.axial_pose(fp_s)
+        fi_t = self.axial_identity(fi_t)
+        fe_t = self.axial_emotion(fe_t)
+        fp_t = self.axial_pose(fp_t)
+
         
         # Randomly swap one type of feature (keeping this functionality)
         swap_type = torch.randint(0, 3, (1,)).item()
