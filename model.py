@@ -381,13 +381,12 @@ class IRFDLoss(nn.Module):
         return l_self + l_lpips
 
     def forward(self, x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_labels_s, emotion_labels_t):
-        l_identity = self.identity_loss(fi_s, fi_t)
+        l_pose_landmark = self.pose_loss(fp_s, fp_t) + self.landmark_loss(x_s, x_s_recon) + self.landmark_loss(x_t, x_t_recon)
         l_emotion = self.emotion_loss(fe_s, fe_t, emotion_labels_s, emotion_labels_t)
-        l_pose = self.pose_loss(fp_s, fp_t)
-        l_landmark = self.landmark_loss(x_s, x_s_recon) + self.landmark_loss(x_t, x_t_recon)
+        l_identity = self.identity_loss(fi_s, fi_t)
         l_recon = self.reconstruction_loss(x_s, x_t, x_s_recon, x_t_recon)
 
-        return l_pose + l_landmark, l_emotion, l_identity, l_recon
+        return l_pose_landmark, l_emotion, l_identity, l_recon
 
     def __del__(self):
         # Clean up MediaPipe resources

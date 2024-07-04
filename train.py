@@ -172,8 +172,7 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
-
-def validate(config, model, dataloader, criterion,  accelerator,stylegan_loss):
+def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, current_resolution):
     model.eval()
     total_loss = 0
   
@@ -183,13 +182,19 @@ def validate(config, model, dataloader, criterion,  accelerator,stylegan_loss):
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
 
             outputs = model(x_s, x_t)
-            irfd_loss, _, _, _, _, _ = criterion(x_s, x_t, *outputs, emotion_labels_s, emotion_labels_t)
+            x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
 
-            fake_s = model.Gd([model.Ei(x_s).squeeze(-1).squeeze(-1)])
-            fake_t = model.Gd([model.Ei(x_t).squeeze(-1).squeeze(-1)])
+            irfd_loss = criterion(
+                x_s, x_t, x_s_recon, x_t_recon, 
+                fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
+                emotion_labels_s, emotion_labels_t
+            )
+
+            fake_s = model.Gd(model.Ei(x_s).squeeze(-1).squeeze(-1), current_resolution)
+            fake_t = model.Gd(model.Ei(x_t).squeeze(-1).squeeze(-1), current_resolution)
             stylegan_loss_value = stylegan_loss(x_s, fake_s) + stylegan_loss(x_t, fake_t)
 
-            loss = irfd_loss + config.training.label_balance * stylegan_loss_value
+            loss = sum(irfd_loss) + config.training.label_balance * stylegan_loss_value
             total_loss += loss.detach().float()
 
     return total_loss.item() / len(dataloader)
@@ -292,14 +297,13 @@ def main():
         model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion = accelerator.prepare(
             model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion
         )
-
         scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
         scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
 
         best_val_loss = float('inf')
         for epoch in range(epochs_per_resolution):
             train_loss_G, train_loss_D = train_epoch(config, model, train_dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer)
-            val_loss = validate(config, model, val_dataloader, criterion, accelerator,stylegan_loss)
+            val_loss = validate(config, model, val_dataloader, criterion, accelerator, stylegan_loss, resolution)
 
             if accelerator.is_main_process:
                 print(f"Resolution: {resolution}, Epoch {epoch+1}/{epochs_per_resolution}: train_loss_G = {train_loss_G:.4f}, train_loss_D = {train_loss_D:.4f}, val_loss = {val_loss:.4f}")
