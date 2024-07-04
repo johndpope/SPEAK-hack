@@ -12,7 +12,7 @@ from datasets import load_dataset
 from model import IRFD, IRFDLoss, StyleGANLoss
 from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
 from torchvision.utils import save_image
-from CelebADataset import CelebADataset,ProgressiveDataset
+from CelebADataset import CelebADataset,ProgressiveDataset,AffectNetDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.optim import Adam
 from torch.utils.tensorboard import SummaryWriter
@@ -20,6 +20,9 @@ from torch.optim import AdamW
 import random
 import numpy as np
 import torch.nn.functional as F
+from PIL import Image, ImageDraw, ImageFont
+import torchvision.transforms as transforms
+import time
 
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_dir):
     def denorm(x):
@@ -32,6 +35,34 @@ def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_d
     
     num_sets = min(16, x_s.size(0))
     save_image(combined[:num_sets*4], os.path.join(output_dir, f"debug_step_{step}_resolution_{resolution}.png"), nrow=4)
+
+
+# save with emotion labels
+def save_emotion_debug_images(x_s, x_t, x_s_recon, x_t_recon, emotion_labels_s, emotion_labels_t, step, resolution, output_dir):
+    def denorm(x):
+        return (x * 0.5 + 0.5).clamp(0, 1)
+    
+    def add_emotion_text(img_tensor, emotion_label):
+        img = transforms.ToPILImage()(img_tensor)
+        draw = ImageDraw.Draw(img)
+        font = ImageFont.load_default()
+        draw.text((5, 5), f"Emotion: {emotion_label}", (255, 255, 255), font=font)
+        return transforms.ToTensor()(img)
+
+    x_s, x_t = denorm(x_s), denorm(x_t)
+    x_s_recon, x_t_recon = denorm(x_s_recon), denorm(x_t_recon)
+    
+    # Add emotion labels to images
+    x_s = torch.stack([add_emotion_text(img, label) for img, label in zip(x_s, emotion_labels_s)])
+    x_t = torch.stack([add_emotion_text(img, label) for img, label in zip(x_t, emotion_labels_t)])
+    x_s_recon = torch.stack([add_emotion_text(img, label) for img, label in zip(x_s_recon, emotion_labels_s)])
+    x_t_recon = torch.stack([add_emotion_text(img, label) for img, label in zip(x_t_recon, emotion_labels_t)])
+
+    combined = torch.cat([x_s, x_s_recon, x_t, x_t_recon], dim=0)
+    
+    num_sets = min(16, x_s.size(0))
+    save_image(combined[:num_sets*4], os.path.join(output_dir, f"emotion_step_{step}_resolution_{resolution}.png"), nrow=4)
+
 
 def create_progressive_dataloader(config, base_dataset, resolution, is_validation=False):
     
@@ -77,6 +108,7 @@ def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self
     writer.add_scalar(f'Loss/Emotion/Resolution_{resolution}', l_emotion.item(), global_step)
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
 
+
 def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
@@ -84,17 +116,41 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
     progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch+1}")
 
+    # Timing variables
+    total_time = 0
+    data_loading_time = 0
+    forward_pass_time = 0
+    d_loss_time = 0
+    g_loss_time = 0
+    backward_time = 0
+    optimizer_step_time = 0
+    logging_time = 0
+
+    epoch_start_time = time.time()
+
     for step, batch in enumerate(dataloader):
+        step_start_time = time.time()
+
         with accelerator.accumulate(model):
+            # Data loading time
+            data_load_end = time.time()
+            data_loading_time += data_load_end - step_start_time
+
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
 
             # Train Discriminator
             optimizer_D.zero_grad()
             
+            # Forward pass time
+            forward_start = time.time()
             outputs = model(x_s, x_t)
             x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
+            forward_end = time.time()
+            forward_pass_time += forward_end - forward_start
 
+            # Discriminator loss time
+            d_loss_start = time.time()
             d_real_s = model.D(x_s)
             d_real_t = model.D(x_t)
             d_fake_s = model.D(x_s_recon.detach())
@@ -106,13 +162,26 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 F.binary_cross_entropy_with_logits(d_fake_s, torch.zeros_like(d_fake_s)) +
                 F.binary_cross_entropy_with_logits(d_fake_t, torch.zeros_like(d_fake_t))
             )
+            d_loss_end = time.time()
+            d_loss_time += d_loss_end - d_loss_start
 
+            # Backward pass time (Discriminator)
+            backward_start = time.time()
             accelerator.backward(loss_D)
+            backward_end = time.time()
+            backward_time += backward_end - backward_start
+
+            # Optimizer step time (Discriminator)
+            optim_start = time.time()
             optimizer_D.step()
+            optim_end = time.time()
+            optimizer_step_time += optim_end - optim_start
 
             # Train Generator
             optimizer_G.zero_grad()
 
+            # Generator loss time
+            g_loss_start = time.time()
             l_pose_landmark, l_emotion, l_identity, l_recon = criterion(
                 x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
                 emotion_labels_s, emotion_labels_t
@@ -127,13 +196,23 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             )
 
             loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv
+            g_loss_end = time.time()
+            g_loss_time += g_loss_end - g_loss_start
 
+            # Backward pass time (Generator)
+            backward_start = time.time()
             accelerator.backward(loss_G)
+            backward_end = time.time()
+            backward_time += backward_end - backward_start
             
             if config.training.grad_clip:
                 accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
             
+            # Optimizer step time (Generator)
+            optim_start = time.time()
             optimizer_G.step()
+            optim_end = time.time()
+            optimizer_step_time += optim_end - optim_start
 
         if accelerator.sync_gradients:
             progress_bar.update(1)
@@ -142,6 +221,8 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
         global_step = epoch * len(dataloader) + step
         if accelerator.is_main_process:
+            # Logging time
+            log_start = time.time()
             if step % config.training.logging_steps == 0:
                 print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item():.4f}, loss_D = {loss_D.item():.4f}")
                 writer.add_scalar('Loss/Train/Generator', loss_G.item(), global_step)
@@ -154,20 +235,37 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
-
-            # In train.py, modify the saving part:
-            if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
-                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-256-epoch-{epoch+1}")
-        
-                # In train.py, modify the saving part:
+            if (epoch + 1) % config.training.save_epochs == 0:
+                save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}")
                 accelerator.save({
-                    'model': accelerator.unwrap_model(model).get_state_dict(),  # Use the new method
+                    'model': accelerator.unwrap_model(model).state_dict(),
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
+                    'resolution': model.current_resolution,
                     'config': config,
-                }, os.path.join(config.training.output_dir, save_path))
+                }, save_path)
+            log_end = time.time()
+            logging_time += log_end - log_start
 
+        total_time += time.time() - step_start_time
+
+    epoch_end_time = time.time()
+    epoch_duration = epoch_end_time - epoch_start_time
+
+    # Print timing statistics
+    print(f"\nEpoch {epoch+1} timing statistics:")
+    print(f"Total epoch time: {epoch_duration:.2f} seconds")
+    print(f"Data loading: {data_loading_time:.2f} seconds ({data_loading_time/epoch_duration*100:.2f}%)")
+    print(f"Forward pass: {forward_pass_time:.2f} seconds ({forward_pass_time/epoch_duration*100:.2f}%)")
+    print(f"Discriminator loss: {d_loss_time:.2f} seconds ({d_loss_time/epoch_duration*100:.2f}%)")
+    print(f"Generator loss: {g_loss_time:.2f} seconds ({g_loss_time/epoch_duration*100:.2f}%)")
+    print(f"Backward pass: {backward_time:.2f} seconds ({backward_time/epoch_duration*100:.2f}%)")
+    print(f"Optimizer step: {optimizer_step_time:.2f} seconds ({optimizer_step_time/epoch_duration*100:.2f}%)")
+    print(f"Logging: {logging_time:.2f} seconds ({logging_time/epoch_duration*100:.2f}%)")
+    print(f"Other: {(epoch_duration - total_time):.2f} seconds ({(epoch_duration - total_time)/epoch_duration*100:.2f}%)")
+
+    return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
@@ -175,14 +273,20 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, current_resolution):
     model.eval()
     total_loss = 0
-  
+
+    
     with torch.no_grad():
         for batch in dataloader:
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
 
+            print(f"Input shapes: x_s: {x_s.shape}, x_t: {x_t.shape}")
+
             outputs = model(x_s, x_t)
             x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
+
+            print(f"Reconstruction shapes: x_s_recon: {x_s_recon.shape}, x_t_recon: {x_t_recon.shape}")
+            print(f"Feature shapes: fi_s: {fi_s.shape}, fe_s: {fe_s.shape}, fp_s: {fp_s.shape}")
 
             irfd_loss = criterion(
                 x_s, x_t, x_s_recon, x_t_recon, 
@@ -190,14 +294,37 @@ def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, c
                 emotion_labels_s, emotion_labels_t
             )
 
-            fake_s = model.Gd(model.Ei(x_s).squeeze(-1).squeeze(-1), current_resolution)
-            fake_t = model.Gd(model.Ei(x_t).squeeze(-1).squeeze(-1), current_resolution)
+            # Flatten and concatenate all features
+            fi_s_flat = fi_s.view(x_s.size(0), -1)
+            fe_s_flat = fe_s.view(x_s.size(0), -1)
+            fp_s_flat = fp_s.view(x_s.size(0), -1)
+            
+            fi_t_flat = fi_t.view(x_t.size(0), -1)
+            fe_t_flat = fe_t.view(x_t.size(0), -1)
+            fp_t_flat = fp_t.view(x_t.size(0), -1)
+
+            combined_s = torch.cat([fi_s_flat, fe_s_flat, fp_s_flat], dim=1)
+            combined_t = torch.cat([fi_t_flat, fe_t_flat, fp_t_flat], dim=1)
+
+            print(f"Combined feature shapes: combined_s: {combined_s.shape}, combined_t: {combined_t.shape}")
+
+            try:
+                fake_s = model.Gd(combined_s, current_resolution)
+                fake_t = model.Gd(combined_t, current_resolution)
+                print(f"Generated fake shapes: fake_s: {fake_s.shape}, fake_t: {fake_t.shape}")
+            except RuntimeError as e:
+                print(f"Error in Gd forward pass: {str(e)}")
+                print(f"Gd input_dim: {model.Gd.input_dim}")
+                raise e
+
             stylegan_loss_value = stylegan_loss(x_s, fake_s) + stylegan_loss(x_t, fake_t)
 
             loss = sum(irfd_loss) + config.training.label_balance * stylegan_loss_value
             total_loss += loss.detach().float()
 
+
     return total_loss.item() / len(dataloader)
+
 
 def main():
     config = OmegaConf.load("config.yaml")
@@ -253,15 +380,19 @@ def main():
 
     # Set up preprocessing
     preprocess = transforms.Compose([
-        transforms.Resize((64, 64)),  # Start with the highest resolution
+        transforms.Resize((256, 256)),  # Start with the highest resolution
         transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
-        # Load the dataset
-    base_dataset = CelebADataset(config.dataset.name, config.dataset.split, preprocess)
 
+    def get_base_dataset(preprocess):
+        test = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess,True)
+        return test
+        # return CelebADataset(config.dataset.name, config.dataset.split, preprocess)
 
+      # Load the dataset
+    base_dataset = get_base_dataset(preprocess)
 
     train_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=False)
     val_dataloader = create_progressive_dataloader(config, base_dataset, 64, is_validation=True)
@@ -277,19 +408,19 @@ def main():
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
     resolutions = [64, 128, 256]
-    epochs_per_resolution = config.training.num_epochs // len(resolutions)
+    epochs_per_resolution = config.training.epochs_per_resolution
 
     for resolution in resolutions:
         print(f"Training at resolution: {resolution}x{resolution}")
         model.adjust_for_resolution(resolutions[resolutions.index(resolution)])
 
-        # Update dataset and dataloaders for the current resolution
-        base_dataset = CelebADataset(config.dataset.name, config.dataset.split, transforms.Compose([
+        preprocess = transforms.Compose([
             transforms.Resize((resolution, resolution)),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
-        ]))
+            ])
+        base_dataset = get_base_dataset(preprocess)
 
         train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
         val_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=True)
@@ -317,6 +448,8 @@ def main():
                     outputs = model(x_s, x_t)
                     x_s_recon, x_t_recon = outputs[0], outputs[1]
                     save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, resolution, config.training.output_dir)
+
+
 
             scheduler_G.step(val_loss)
             scheduler_D.step(val_loss)
