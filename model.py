@@ -215,13 +215,14 @@ class IRFD(nn.Module):
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
         
         self.max_resolution = max_resolution
+        self.current_resolution = max_resolution
     def get_state_dict(self):
         state_dict = self.state_dict()
         state_dict['Gd_fourier_state'] = self.Gd.get_fourier_state()
         return state_dict
 
     def adjust_for_resolution(self,resolution):
-        self.max_resolution = resolution
+        self.current_resolution = resolution
 
     def load_state_dict(self, state_dict):
         fourier_state = state_dict.pop('Gd_fourier_state', None)
@@ -262,8 +263,8 @@ class IRFD(nn.Module):
         gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
         
         # Generate reconstructed images using CIPSGenerator
-        x_s_recon = self.Gd(gen_input_s, self.max_resolution)
-        x_t_recon = self.Gd(gen_input_t, self.max_resolution)
+        x_s_recon = self.Gd(gen_input_s, self.current_resolution)
+        x_t_recon = self.Gd(gen_input_t, self.current_resolution)
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)

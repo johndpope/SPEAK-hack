@@ -35,6 +35,7 @@ class AffectNetDataset(Dataset):
                     self.emotion_labels.append(emotion_label)
         
     def __len__(self):
+        # return 100
         return len(self.image_paths) // 2  # We're processing pairs of images
 
     def remove_bg(self, image):
