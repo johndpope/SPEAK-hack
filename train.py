@@ -195,16 +195,19 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
             # In train.py, modify the saving part:
             if (epoch + 1) % config.training.save_epochs == 0 and accelerator.is_main_process:
-                save_path = os.path.join(config.training.output_dir, f"checkpoint-resolution-256-epoch-{epoch+1}")
+                save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}")
         
                 # In train.py, modify the saving part:
                 accelerator.save({
-                    'model': accelerator.unwrap_model(model).get_state_dict(),  # Use the new method
+                    'model': accelerator.unwrap_model(model).state_dict(),
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
+                    'resolution': model.current_resolution,
                     'config': config,
-                }, os.path.join(config.training.output_dir, save_path))
+                },save_path)
+
+        
 
 
 
