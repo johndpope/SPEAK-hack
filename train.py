@@ -235,8 +235,8 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
-            if (epoch + 1) % config.training.save_epochs == 0:
-                save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}")
+            if global_step % config.training.save_steps == 0:
+                save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
                 accelerator.save({
                     'model': accelerator.unwrap_model(model).state_dict(),
                     'optimizer_G': optimizer_G.state_dict(),
