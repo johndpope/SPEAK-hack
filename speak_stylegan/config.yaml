@@ -22,10 +22,10 @@ training:
   num_epochs: 100
   train_batch_size: 2
   eval_batch_size: 16
-  save_image_steps: 1000
+  save_image_steps: 100
   gradient_accumulation_steps: 1
   mixed_precision: fp16
-  epochs_per_resolution: 5
+  epochs_per_resolution: 50
   eval_steps: 1000
   logging_steps: 100
   num_workers: 4

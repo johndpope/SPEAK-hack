@@ -39,8 +39,23 @@ class AffectNetDataset(Dataset):
         return len(self.image_paths) // 2  # We're processing pairs of images
 
     def remove_bg(self, image):
-        # Dummy implementation for background removal. Implement as needed.
-        return image
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr = img_byte_arr.getvalue()
+        bg_removed_bytes = remove(img_byte_arr)
+        bg_removed_image = Image.open(io.BytesIO(bg_removed_bytes)).convert("RGBA")  # Use RGBA to keep transparency
+
+        if self.use_greenscreen:
+            # Create a green screen background
+            # green_screen = Image.new("RGBA", bg_removed_image.size, (0, 255, 0, 255))  # Green color
+            black_screen = Image.new("RGB", bg_removed_image.size, (0, 0, 0))
+            # Composite the image onto the green screen
+            final_image = Image.alpha_composite(black_screen, bg_removed_image)
+        else:
+            final_image = bg_removed_image
+
+        final_image = final_image.convert("RGB")  # Convert to RGB format
+        return final_image
 
     def __getitem__(self, idx):
         # Get a pair of images

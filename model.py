@@ -18,7 +18,7 @@ import numpy as np
 import mediapipe as mp
 import lpips
 from torch.utils.checkpoint import checkpoint
-
+import math
 
 class FourierFeatures(nn.Module):
     def __init__(self, input_dim, mapping_size=256, scale=10):
@@ -197,7 +197,6 @@ class CIPSDiscriminator(nn.Module):
         return output  # Return raw output without averaging
 
 
-
 class AxialAttention(nn.Module):
     def __init__(self, in_channels, out_channels, heads=8, dim_head=64):
         super().__init__()
@@ -209,6 +208,25 @@ class AxialAttention(nn.Module):
         self.to_qkv = nn.Linear(in_channels, heads * dim_head * 3, bias=False)
         self.to_out = nn.Linear(heads * dim_head, out_channels)
 
+        self._init_weights()
+
+    def _init_weights(self):
+        # Initialize the weights of the to_qkv linear layer
+        nn.init.xavier_uniform_(self.to_qkv.weight)
+
+        # Initialize the weights of the to_out linear layer
+        nn.init.xavier_uniform_(self.to_out.weight)
+        if self.to_out.bias is not None:
+            nn.init.constant_(self.to_out.bias, 0)
+
+        # Optionally, you can use a custom initialization for attention
+        self._init_attention()
+
+    def _init_attention(self):
+        # Custom initialization for attention weights
+        # This is inspired by the initialization used in the "Attention Is All You Need" paper
+        nn.init.normal_(self.to_qkv.weight, mean=0, std=math.sqrt(2.0 / (self.in_channels + self.heads * self.dim_head)))
+
     def forward(self, x):
         b, c, h, w = x.shape
         x = x.permute(0, 2, 3, 1).contiguous()  # b, h, w, c
@@ -218,6 +236,7 @@ class AxialAttention(nn.Module):
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * (self.dim_head ** -0.5)
         attn = dots.softmax(dim=-1)
+        
         out = torch.matmul(attn, v)
 
         out = out.transpose(1, 2).reshape(b, h, w, self.heads * self.dim_head)
@@ -230,6 +249,14 @@ class AxialFeatureSelector(nn.Module):
         self.height_attn = AxialAttention(in_channels, out_channels)
         self.width_attn = AxialAttention(out_channels, out_channels)
         self.channel_mixer = nn.Conv2d(out_channels, out_channels, kernel_size=1)
+        
+        self._init_weights()
+
+    def _init_weights(self):
+        # Initialize the channel mixer (1x1 conv)
+        nn.init.kaiming_normal_(self.channel_mixer.weight, mode='fan_out', nonlinearity='relu')
+        if self.channel_mixer.bias is not None:
+            nn.init.constant_(self.channel_mixer.bias, 0)
 
     def forward(self, x):
         x = self.height_attn(x)

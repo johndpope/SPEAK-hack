@@ -132,7 +132,7 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
-    
+
 def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
@@ -453,6 +453,18 @@ def main():
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
             ])
+
+        # preprocess = transforms.Compose([
+        #     transforms.Resize((resolution, resolution)),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
+        #     transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+        #     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        #     transforms.RandomApply([transforms.ElasticTransform(alpha=250.0, sigma=8.0)], p=0.5),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize([0.5], [0.5])
+        # ])
+       
         base_dataset = get_base_dataset(preprocess)
 
         train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
