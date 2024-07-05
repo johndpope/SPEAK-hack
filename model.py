@@ -293,6 +293,7 @@ class IRFD(nn.Module):
         self.current_resolution = max_resolution
     def get_state_dict(self):
         state_dict = self.state_dict()
+        # print("'Gd_fourier_state' dict:",state_dict['Gd_fourier_state'])
         state_dict['Gd_fourier_state'] = self.Gd.get_fourier_state()
         return state_dict
 
@@ -300,9 +301,13 @@ class IRFD(nn.Module):
         self.current_resolution = resolution
 
     def load_state_dict(self, state_dict):
+        # print("👟 load_state_dict dict:",state_dict.keys)
         fourier_state = state_dict.pop('Gd_fourier_state', None)
+        print("fourier_state dict:",fourier_state)
         super().load_state_dict(state_dict)
+        
         if fourier_state is not None:
+            print('👟 setting fourier_state')
             self.Gd.set_fourier_state(fourier_state)
 
     def _create_encoder(self):

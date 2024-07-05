@@ -59,24 +59,28 @@ class AffectNetDataset(Dataset):
         if cache_path and os.path.exists(cache_path):
             return Image.open(cache_path).convert("RGB")
 
-        img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='PNG')
-        img_byte_arr = img_byte_arr.getvalue()
-        bg_removed_bytes = remove(img_byte_arr)
-        bg_removed_image = Image.open(io.BytesIO(bg_removed_bytes)).convert("RGBA")
+        try:
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_byte_arr = img_byte_arr.getvalue()
+            bg_removed_bytes = remove(img_byte_arr)
+            bg_removed_image = Image.open(io.BytesIO(bg_removed_bytes)).convert("RGBA")
 
-        if self.use_greenscreen:
-            black_screen = Image.new("RGB", bg_removed_image.size, (0, 0, 0))
-            final_image = Image.alpha_composite(black_screen.convert("RGBA"), bg_removed_image)
-        else:
-            final_image = bg_removed_image
+            if self.use_greenscreen:
+                black_screen = Image.new("RGB", bg_removed_image.size, (0, 0, 0))
+                final_image = Image.alpha_composite(black_screen.convert("RGBA"), bg_removed_image)
+            else:
+                final_image = bg_removed_image
 
-        final_image = final_image.convert("RGB")
+            final_image = final_image.convert("RGB")
 
-        if cache_path:
-            final_image.save(cache_path)
+            if cache_path:
+                final_image.save(cache_path)
 
-        return final_image
+            return final_image
+        except Exception as e:
+            print(f"Background removal failed: {str(e)}. Returning original image.")
+            return image.convert("RGB")
 
     def __getitem__(self, idx):
         # Get a pair of images
