@@ -109,6 +109,30 @@ def log_training_step(writer, loss, l_identity, l_cls, l_pose, l_emotion, l_self
     writer.add_scalar(f'Loss/SelfReconstruction/Resolution_{resolution}', l_self.item(), global_step)
 
 
+def compute_gradient_penalty(discriminator, real_samples, fake_samples):
+    batch_size = real_samples.size(0)
+    alpha = torch.rand(batch_size, 1, 1, 1).to(real_samples.device)
+    interpolates = (alpha * real_samples + ((1 - alpha) * fake_samples)).requires_grad_(True)
+    
+    d_interpolates = discriminator(interpolates)
+    
+    fake = torch.ones(d_interpolates.size()).to(real_samples.device)
+    
+    gradients = torch.autograd.grad(
+        outputs=d_interpolates,
+        inputs=interpolates,
+        grad_outputs=fake,
+        create_graph=True,
+        retain_graph=True,
+        only_inputs=True,
+    )[0]
+    
+    # Use .reshape() instead of .view()
+    gradients = gradients.reshape(batch_size, -1)
+    gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
+    return gradient_penalty
+
+
 def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
@@ -156,12 +180,22 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             d_fake_s = model.D(x_s_recon.detach())
             d_fake_t = model.D(x_t_recon.detach())
 
-            loss_D = (
+            loss_D_real = (
                 F.binary_cross_entropy_with_logits(d_real_s, torch.ones_like(d_real_s)) +
-                F.binary_cross_entropy_with_logits(d_real_t, torch.ones_like(d_real_t)) +
+                F.binary_cross_entropy_with_logits(d_real_t, torch.ones_like(d_real_t))
+            )
+            loss_D_fake = (
                 F.binary_cross_entropy_with_logits(d_fake_s, torch.zeros_like(d_fake_s)) +
                 F.binary_cross_entropy_with_logits(d_fake_t, torch.zeros_like(d_fake_t))
             )
+
+            # Compute gradient penalty
+            gradient_penalty_s = compute_gradient_penalty(model.D, x_s, x_s_recon.detach())
+            gradient_penalty_t = compute_gradient_penalty(model.D, x_t, x_t_recon.detach())
+            gradient_penalty = (gradient_penalty_s + gradient_penalty_t) / 2
+
+            loss_D = loss_D_real + loss_D_fake + config.training.gp_weight * gradient_penalty
+
             d_loss_end = time.time()
             d_loss_time += d_loss_end - d_loss_start
 
@@ -231,14 +265,17 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 writer.add_scalar('Loss/Train/Emotion', l_emotion.item(), global_step)
                 writer.add_scalar('Loss/Train/Identity', l_identity.item(), global_step)
                 writer.add_scalar('Loss/Train/Reconstruction', l_recon.item(), global_step)
+                writer.add_scalar('Loss/Train/GradientPenalty', gradient_penalty.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
             if global_step % config.training.save_steps == 0:
                 save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
+                state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
+                    
                 accelerator.save({
-                    'model': accelerator.unwrap_model(model).state_dict(),
+                    'model': state_dict,
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
@@ -267,8 +304,6 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
-
-    return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
 def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, current_resolution):
     model.eval()
@@ -366,7 +401,6 @@ def main():
         emotion_weight=config.loss.emotion_weight,
         identity_weight=config.loss.identity_weight
     )
-
     # Check for existing checkpoint
     start_epoch = 0
     latest_checkpoint = None
@@ -377,17 +411,34 @@ def main():
             latest_checkpoint = os.path.join(config.training.output_dir, latest_checkpoint)
             print(f"👑 Found latest checkpoint: {latest_checkpoint}")
 
+    # Load checkpoint if exists
+    if latest_checkpoint:
+        checkpoint = torch.load(latest_checkpoint, map_location=accelerator.device)
+        model.load_state_dict(checkpoint['model'])
+        optimizer_G.load_state_dict(checkpoint['optimizer_G'])
+        optimizer_D.load_state_dict(checkpoint['optimizer_D'])
+        start_epoch = checkpoint['epoch'] + 1
+        current_resolution = checkpoint['resolution']
+        config = checkpoint['config']
+        model.Gd.set_fourier_state(checkpoint['Gd_fourier_state'])
+        print(f"Resumed training from epoch {start_epoch}, resolution {current_resolution}")
 
     # Set up preprocessing
     preprocess = transforms.Compose([
         transforms.Resize((256, 256)),  # Start with the highest resolution
-        transforms.RandomHorizontalFlip(),
+        # transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
 
     def get_base_dataset(preprocess):
-        test = AffectNetDataset("/media/oem/12TB/AffectNet/train",  preprocess,True)
+        test =  AffectNetDataset(
+            root_dir="/media/oem/12TB/AffectNet/train",
+            preprocess=preprocess,
+            remove_background=True,
+            use_greenscreen=False,
+            cache_dir='/media/oem/12TB/AffectNet/train/cache'
+        )
         return test
         # return CelebADataset(config.dataset.name, config.dataset.split, preprocess)
 
@@ -420,6 +471,18 @@ def main():
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
             ])
+
+        # preprocess = transforms.Compose([
+        #     transforms.Resize((resolution, resolution)),
+        #     transforms.RandomHorizontalFlip(),
+        #     transforms.RandomAffine(degrees=10, translate=(0.1, 0.1), scale=(0.9, 1.1), shear=10),
+        #     transforms.RandomPerspective(distortion_scale=0.2, p=0.5),
+        #     transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        #     transforms.RandomApply([transforms.ElasticTransform(alpha=250.0, sigma=8.0)], p=0.5),
+        #     transforms.ToTensor(),
+        #     transforms.Normalize([0.5], [0.5])
+        # ])
+       
         base_dataset = get_base_dataset(preprocess)
 
         train_dataloader = create_progressive_dataloader(config, base_dataset, resolution, is_validation=False)
@@ -457,14 +520,16 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 if accelerator.is_main_process:
+                    state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
                     accelerator.save({
-                        'model': accelerator.unwrap_model(model).state_dict(),
+                        'model': state_dict,
                         'optimizer_G': optimizer_G.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(),
                         'epoch': epoch,
                         'resolution': resolution,
                         'config': config,
                     }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch}.pth"))
+
 
             
 

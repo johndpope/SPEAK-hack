@@ -19,10 +19,10 @@ training:
   num_epochs: 100
   train_batch_size: 2
   eval_batch_size: 16
-  save_image_steps: 1000
+  save_image_steps: 100
   gradient_accumulation_steps: 1
   mixed_precision: "fp16"
-  epochs_per_resolution: 5  # Number of epochs before increasing resolution
+  epochs_per_resolution: 50  # Number of epochs before increasing resolution
   eval_steps: 1000
   logging_steps: 100
   num_workers: 4
@@ -36,7 +36,7 @@ training:
   max_resolution: 512  # Maximum resolution for progressive growing
   label_balance: 0.5  # Balance between IRFD loss and StyleGAN loss
   stylegan_loss_weight: 0.1  # Weight for StyleGAN loss
-
+  gp_weight: 10.0
 # Dataset configuration
 dataset:
   name: "lansinuote/gen.1.celeba"
