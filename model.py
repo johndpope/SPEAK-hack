@@ -4,8 +4,6 @@ import torch.optim as optim
 from torchvision.models import resnet50
 from torch.utils.data import DataLoader
 from torchvision import transforms
-from accelerate import Accelerator
-from tqdm.auto import tqdm
 import os
 from omegaconf import OmegaConf
 from datasets import load_dataset
@@ -19,250 +17,215 @@ import mediapipe as mp
 import lpips
 from torch.utils.checkpoint import checkpoint
 import math
+import random
 
-class FourierFeatures(nn.Module):
-    def __init__(self, input_dim, mapping_size=256, scale=10):
+
+class ConstantInput(nn.Module):
+    def __init__(self, channel, size=4):
         super().__init__()
-        self.input_dim = input_dim
-        self.mapping_size = mapping_size
-        self.B = nn.Parameter(torch.randn((input_dim, mapping_size)) * scale, requires_grad=False)
-    
-    def forward(self, x):
-        x = x.matmul(self.B)
-        return torch.sin(x)
+        self.input = nn.Parameter(torch.randn(1, channel, size, size))
 
-class ModulatedFC(nn.Module):
-    def __init__(self, in_features, out_features, style_dim):
+    def forward(self, batch_size):
+        return self.input.repeat(batch_size, 1, 1, 1)
+
+class AdaIN(nn.Module):
+    def __init__(self, in_channel, style_dim):
         super().__init__()
-        self.fc = nn.Linear(in_features, out_features)
-        self.modulation = nn.Linear(style_dim, in_features)
-        
-    def forward(self, x, style):
-        style = self.modulation(style).unsqueeze(1)
-        x = self.fc(x * style)
-        return x
+        self.norm = nn.InstanceNorm2d(in_channel)
+        self.style = nn.Linear(style_dim, in_channel * 2)
 
-class CIPSGenerator(nn.Module):
-    def __init__(self, input_dim, ngf=64, max_resolution=256, style_dim=512, num_layers=8):
-        super(CIPSGenerator, self).__init__()
-        
-        self.input_dim = input_dim
-        self.ngf = ngf
-        self.max_resolution = max_resolution
-        self.style_dim = style_dim
-        self.num_layers = num_layers
-        
-        self.mapping_network = nn.Sequential(
-            nn.Linear(input_dim, style_dim),
-            nn.ReLU(),
-            nn.Linear(style_dim, style_dim),
-            nn.ReLU(),
-            nn.Linear(style_dim, style_dim)
+    def forward(self, input, style):
+        style = self.style(style).unsqueeze(2).unsqueeze(3)
+        gamma, beta = style.chunk(2, 1)
+        out = self.norm(input)
+        return gamma * out + beta
+
+class StyleConv(nn.Module):
+    def __init__(self, in_channel, out_channel, kernel_size, style_dim, upsample=False):
+        super().__init__()
+        self.conv = nn.Conv2d(
+            in_channel, out_channel, kernel_size, padding=kernel_size // 2
         )
-        
-        self.fourier_features = FourierFeatures(2, 256)
-        self.coord_embeddings = nn.Parameter(torch.randn(1, 512, max_resolution, max_resolution))
-        
-        self.layers = nn.ModuleList()
-        self.to_rgb = nn.ModuleList()
-        
-        current_dim = 512 + 256  # Fourier features + coordinate embeddings
-        
-        for i in range(num_layers):
-            self.layers.append(ModulatedFC(current_dim, ngf * 8, style_dim))
-            if i % 2 == 0 or i == num_layers - 1:
-                self.to_rgb.append(ModulatedFC(ngf * 8, 3, style_dim))
-            current_dim = ngf * 8
-        
-    def get_fourier_state(self):
-        return self.fourier_features.B.data
+        self.adain = AdaIN(out_channel, style_dim)
+        self.upsample = upsample
 
-    def set_fourier_state(self, state):
-        self.fourier_features.B.data = state
+    def forward(self, input, style):
+        out = self.conv(input)
+        if self.upsample:
+            out = F.interpolate(out, scale_factor=2, mode='bilinear', align_corners=False)
+        out = self.adain(out, style)
+        return out
 
-    def get_coord_grid(self, batch_size, resolution):
-        x = torch.linspace(-1, 1, resolution)
-        y = torch.linspace(-1, 1, resolution)
-        x, y = torch.meshgrid(x, y, indexing='ij')
-        coords = torch.stack((x, y), dim=-1).unsqueeze(0).repeat(batch_size, 1, 1, 1)
-        return coords.to(next(self.parameters()).device)
-    
-    def forward(self, x, target_resolution):
-        batch_size = x.size(0)
-        
-        # Map input to style vector
-        w = self.mapping_network(x)
-        
-        # Generate coordinate grid
-        coords = self.get_coord_grid(batch_size, target_resolution)
-        coords_flat = coords.view(batch_size, -1, 2)
-        
-        # Get Fourier features and coordinate embeddings
-        fourier_features = self.fourier_features(coords_flat)
-        coord_embeddings = F.grid_sample(
-            self.coord_embeddings.expand(batch_size, -1, -1, -1),
-            coords,
-            mode='bilinear',
-            align_corners=True
-        ).permute(0, 2, 3, 1).reshape(batch_size, -1, 512)
-        
-        # Concatenate Fourier features and coordinate embeddings
-        features = torch.cat([fourier_features, coord_embeddings], dim=-1)
-        
-        rgb = 0
-        for i, (layer, to_rgb) in enumerate(zip(self.layers, self.to_rgb)):
-            features = layer(features, w)
-            features = F.leaky_relu(features, 0.2)
-            
-            if i % 2 == 0 or i == self.num_layers - 1:
-                rgb = rgb + to_rgb(features, w)
-        
-        output = torch.sigmoid(rgb).view(batch_size, target_resolution, target_resolution, 3).permute(0, 3, 1, 2)
-        
-        # Ensure output is in [-1, 1] range
-        output = (output * 2) - 1
-        
-        return output
+class ToRGB(nn.Module):
+    def __init__(self, in_channel, style_dim, upsample=True):
+        super().__init__()
+        self.upsample = upsample
+        self.conv = nn.Conv2d(in_channel, 3, 1)
+        self.adain = AdaIN(3, style_dim)
 
+    def forward(self, input, style, skip=None):
+        out = self.conv(input)
+        out = self.adain(out, style)
+
+        if skip is not None:
+            if self.upsample:
+                skip = F.interpolate(skip, scale_factor=2, mode='bilinear', align_corners=False)
+            out = out + skip
+
+        return out
+
+class PixelNorm(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input):
+        return input * torch.rsqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-8)
+
+
+class StyleGANGenerator(nn.Module):
+    def __init__(self, style_dim=6144, n_mlp=8, max_resolution=256):
+        super().__init__()
         
-class CIPSDiscriminator(nn.Module):
-    def __init__(self, input_dim=3, ndf=64, max_resolution=256, num_layers=8):
-        super(CIPSDiscriminator, self).__init__()
-        
-        self.input_dim = input_dim
-        self.ndf = ndf
+        self.style_dim = style_dim  # 3 * 2048 (3 ResNet50 features)
         self.max_resolution = max_resolution
-        self.num_layers = num_layers
+
+        # Mapping network
+        layers = []
+        for i in range(n_mlp):
+            layers.append(nn.Linear(style_dim, style_dim))
+            layers.append(nn.LeakyReLU(0.2))
+        self.style = nn.Sequential(*layers)
+
+        self.channels = {
+            4: 512,
+            8: 512,
+            16: 512,
+            32: 512,
+            64: 256,
+            128: 128,
+            256: 64
+        }
+
+        # Initial input processing
+        self.input = nn.Linear(style_dim, 4 * 4 * self.channels[4])
+        self.conv1 = StyleConv(self.channels[4], self.channels[4], 3, style_dim)
+        self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
+
+        self.log_size = int(math.log(max_resolution, 2))
+        self.num_layers = (self.log_size - 2) * 2 + 1
+
+        self.convs = nn.ModuleList()
+        self.to_rgbs = nn.ModuleList()
+
+        in_channel = self.channels[4]
+        for i in range(3, self.log_size + 1):
+            out_channel = self.channels[2 ** i]
+            self.convs.append(StyleConv(in_channel, out_channel, 3, style_dim, upsample=True))
+            self.convs.append(StyleConv(out_channel, out_channel, 3, style_dim))
+            self.to_rgbs.append(ToRGB(out_channel, style_dim))
+            in_channel = out_channel
+
+    def forward(self, features, resolution=None, noise=None, return_latents=False):
+        if resolution is None:
+            resolution = self.max_resolution
         
-        self.fourier_features = FourierFeatures(2, 256)
-        self.coord_embeddings = nn.Parameter(torch.randn(1, 512, max_resolution, max_resolution))
+        styles = self.style(features)
+
+        # Initial processing
+        out = self.input(styles).view(-1, self.channels[4], 4, 4)
         
-        self.layers = nn.ModuleList()
+        if noise is not None:
+            out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
         
-        current_dim = 512 + 256 + input_dim  # Fourier features + coordinate embeddings + input channels
-        
-        for i in range(num_layers):
-            self.layers.append(nn.Sequential(
-                nn.Linear(current_dim, ndf * 8),
-                nn.LeakyReLU(0.2)
-            ))
-            current_dim = ndf * 8
-        
-        self.final = nn.Linear(current_dim, 1)
-    
-    def get_coord_grid(self, batch_size, resolution):
-        x = torch.linspace(-1, 1, resolution)
-        y = torch.linspace(-1, 1, resolution)
-        x, y = torch.meshgrid(x, y, indexing='ij')
-        coords = torch.stack((x, y), dim=-1).unsqueeze(0).repeat(batch_size, 1, 1, 1)
-        return coords.to(next(self.parameters()).device)
-    
-    def forward(self, x):
-        batch_size, _, height, width = x.shape
-        
-        # Generate coordinate grid
-        coords = self.get_coord_grid(batch_size, height)
-        coords_flat = coords.view(batch_size, -1, 2)
-        
-        # Get Fourier features
-        fourier_features = self.fourier_features(coords_flat)
-        
-        # Get coordinate embeddings
-        if height != self.max_resolution or width != self.max_resolution:
-            coord_embeddings = F.interpolate(
-                self.coord_embeddings,
-                size=(height, width),
-                mode='bilinear',
-                align_corners=True
-            )
+        out = self.conv1(out, styles)
+        skip = self.to_rgb1(out, styles)
+
+        for i, (conv1, conv2, to_rgb) in enumerate(zip(self.convs[::2], self.convs[1::2], self.to_rgbs)):
+            out = conv1(out, styles)
+            if noise is not None:
+                out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
+            out = conv2(out, styles)
+            if noise is not None:
+                out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
+            skip = to_rgb(out, styles, skip)
+
+            if out.shape[-1] == resolution:
+                break
+
+        image = skip
+
+        if return_latents:
+            return image, styles
         else:
-            coord_embeddings = self.coord_embeddings
-
-        coord_embeddings = coord_embeddings.expand(batch_size, -1, -1, -1)
-        coord_embeddings = coord_embeddings.permute(0, 2, 3, 1).reshape(batch_size, -1, 512)
-        
-        # Flatten input image
-        x_flat = x.permute(0, 2, 3, 1).reshape(batch_size, -1, self.input_dim)
-        
-        # Concatenate all features
-        features = torch.cat([x_flat, fourier_features, coord_embeddings], dim=-1)
-        
-        # Pass through layers
-        for layer in self.layers:
-            features = layer(features)
-        
-        # Final prediction
-        output = self.final(features)
-        
-        return output  # Return raw output without averaging
+            return image
 
 
-class AxialAttention(nn.Module):
-    def __init__(self, in_channels, out_channels, heads=8, dim_head=64):
+class ConvBlock(nn.Module):
+    def __init__(self, in_channel, out_channel, kernel_size, padding, downsample=False):
         super().__init__()
-        self.in_channels = in_channels
-        self.out_channels = out_channels
-        self.heads = heads
-        self.dim_head = dim_head
+        self.conv = spectral_norm(nn.Conv2d(in_channel, out_channel, kernel_size, padding=padding))
+        self.downsample = downsample
 
-        self.to_qkv = nn.Linear(in_channels, heads * dim_head * 3, bias=False)
-        self.to_out = nn.Linear(heads * dim_head, out_channels)
+    def forward(self, input):
+        out = self.conv(input)
+        if self.downsample:
+            out = F.avg_pool2d(out, 2)
+        return out
 
-        self._init_weights()
-
-    def _init_weights(self):
-        # Initialize the weights of the to_qkv linear layer
-        nn.init.xavier_uniform_(self.to_qkv.weight)
-
-        # Initialize the weights of the to_out linear layer
-        nn.init.xavier_uniform_(self.to_out.weight)
-        if self.to_out.bias is not None:
-            nn.init.constant_(self.to_out.bias, 0)
-
-        # Optionally, you can use a custom initialization for attention
-        self._init_attention()
-
-    def _init_attention(self):
-        # Custom initialization for attention weights
-        # This is inspired by the initialization used in the "Attention Is All You Need" paper
-        nn.init.normal_(self.to_qkv.weight, mean=0, std=math.sqrt(2.0 / (self.in_channels + self.heads * self.dim_head)))
-
-    def forward(self, x):
-        b, c, h, w = x.shape
-        x = x.permute(0, 2, 3, 1).contiguous()  # b, h, w, c
-
-        qkv = self.to_qkv(x).chunk(3, dim=-1)
-        q, k, v = map(lambda t: t.reshape(b, h * w, self.heads, self.dim_head).transpose(1, 2), qkv)
-
-        dots = torch.matmul(q, k.transpose(-1, -2)) * (self.dim_head ** -0.5)
-        attn = dots.softmax(dim=-1)
-        
-        out = torch.matmul(attn, v)
-
-        out = out.transpose(1, 2).reshape(b, h, w, self.heads * self.dim_head)
-        out = self.to_out(out)
-        return out.permute(0, 3, 1, 2).contiguous()  # b, c, h, w
-
-class AxialFeatureSelector(nn.Module):
-    def __init__(self, in_channels, out_channels):
+class StyleGANDiscriminator(nn.Module):
+    def __init__(self, max_resolution=1024, channel_multiplier=2):
         super().__init__()
-        self.height_attn = AxialAttention(in_channels, out_channels)
-        self.width_attn = AxialAttention(out_channels, out_channels)
-        self.channel_mixer = nn.Conv2d(out_channels, out_channels, kernel_size=1)
         
-        self._init_weights()
+        self.max_resolution = max_resolution
+        
+        self.channels = {
+            4: 512,
+            8: 512,
+            16: 512,
+            32: 512,
+            64: 256 * channel_multiplier,
+            128: 128 * channel_multiplier,
+            256: 64 * channel_multiplier
+        }
 
-    def _init_weights(self):
-        # Initialize the channel mixer (1x1 conv)
-        nn.init.kaiming_normal_(self.channel_mixer.weight, mode='fan_out', nonlinearity='relu')
-        if self.channel_mixer.bias is not None:
-            nn.init.constant_(self.channel_mixer.bias, 0)
+        self.from_rgb = nn.ModuleDict()
+        for res in self.channels.keys():
+            self.from_rgb[str(res)] = ConvBlock(3, self.channels[res], 1, 0)
 
-    def forward(self, x):
-        x = self.height_attn(x)
-        x = self.width_attn(x)
-        x = self.channel_mixer(x)
-        return x
+        self.convs = nn.ModuleList()
+
+        log_size = int(math.log(max_resolution, 2))
+
+        in_channel = self.channels[max_resolution]
+
+        for i in range(log_size, 2, -1):
+            out_channel = self.channels[2 ** (i - 1)]
+            self.convs.append(ConvBlock(in_channel, out_channel, 3, 1))
+            self.convs.append(ConvBlock(out_channel, out_channel, 3, 1, downsample=True))
+            in_channel = out_channel
+
+        self.final_conv = ConvBlock(in_channel, self.channels[4], 3, 1)
+        self.final_linear = nn.Sequential(
+            spectral_norm(nn.Linear(self.channels[4] * 4 * 4, 1)),
+        )
+
+    def forward(self, input, resolution=None):
+        if resolution is None:
+            resolution = self.max_resolution
+        
+        out = self.from_rgb[str(resolution)](input)
+
+        for conv in self.convs:
+            out = conv(out)
+            if out.shape[-1] == 4:
+                break
+
+        out = self.final_conv(out)
+        out = out.view(out.shape[0], -1)
+        out = self.final_linear(out)
+
+        return out
+
 
 
 class IRFD(nn.Module):
@@ -275,40 +238,22 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
 
-        # input_dim=2048
-          # Axial Attention Feature Selectors
-        # self.axial_identity = AxialFeatureSelector(input_dim, input_dim)
-        # self.axial_emotion = AxialFeatureSelector(input_dim, input_dim)
-        # self.axial_pose = AxialFeatureSelector(input_dim, input_dim)
-
         # CIPSGenerator-based generator
-        self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
+        self.Gd = StyleGANGenerator(style_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
         
         # StyleGAN Discriminator
-        self.D = CIPSDiscriminator(input_dim=3, max_resolution=max_resolution)
+        self.D = StyleGANDiscriminator(max_resolution=max_resolution)
         
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
         
         self.max_resolution = max_resolution
         self.current_resolution = max_resolution
-    def get_state_dict(self):
-        state_dict = self.state_dict()
-        # print("'Gd_fourier_state' dict:",state_dict['Gd_fourier_state'])
-        state_dict['Gd_fourier_state'] = self.Gd.get_fourier_state()
-        return state_dict
+
 
     def adjust_for_resolution(self,resolution):
         self.current_resolution = resolution
 
-    def load_state_dict(self, state_dict):
-        # print("👟 load_state_dict dict:",state_dict.keys)
-        fourier_state = state_dict.pop('Gd_fourier_state', None)
-        print("fourier_state dict:",fourier_state)
-        super().load_state_dict(state_dict)
-        
-        if fourier_state is not None:
-            print('👟 setting fourier_state')
-            self.Gd.set_fourier_state(fourier_state)
+
 
     def _create_encoder(self):
         encoder = resnet50(pretrained=True)
@@ -318,9 +263,8 @@ class IRFD(nn.Module):
         # Flatten and concatenate the encoder outputs
         return torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
     
-    def forward(self, x_s, x_t):
+    def forward(self, x_s, x_t, noise):
         # Encode source and target images
-        # Use checkpoint for memory-intensive operations
         fi_s = checkpoint(self.Ei, x_s)
         fe_s = checkpoint(self.Ee, x_s)
         fp_s = checkpoint(self.Ep, x_s)
@@ -328,15 +272,6 @@ class IRFD(nn.Module):
         fi_t = checkpoint(self.Ei, x_t)
         fe_t = checkpoint(self.Ee, x_t)
         fp_t = checkpoint(self.Ep, x_t)
-
-
-        # Apply axial attention feature selection
-        # fi_s = self.axial_identity(fi_s)
-        # fe_s = self.axial_emotion(fe_s)
-        # fp_s = self.axial_pose(fp_s)
-        # fi_t = self.axial_identity(fi_t)
-        # fe_t = self.axial_emotion(fe_t)
-        # fp_t = self.axial_pose(fp_t)
 
         
         # Randomly swap one type of feature (keeping this functionality)
@@ -352,9 +287,10 @@ class IRFD(nn.Module):
         gen_input_s = self._prepare_generator_input(fi_s, fe_s, fp_s)
         gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
         
-        # Generate reconstructed images using CIPSGenerator
-        x_s_recon = self.Gd(gen_input_s, self.current_resolution)
-        x_t_recon = self.Gd(gen_input_t, self.current_resolution)
+        # Generate reconstructed images using StyleGANGenerator
+        x_s_recon = self.Gd(gen_input_s, self.current_resolution, noise=noise)
+        x_t_recon = self.Gd(gen_input_t, self.current_resolution, noise=noise)
+        
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
