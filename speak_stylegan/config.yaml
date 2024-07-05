@@ -28,7 +28,7 @@ training:
   epochs_per_resolution: 50
   eval_steps: 1000
   logging_steps: 100
-  num_workers: 4
+  num_workers: 8
   val_batch_size: 32
   early_stopping_patience: 10
   grad_clip: true

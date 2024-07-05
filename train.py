@@ -420,7 +420,7 @@ def main():
         start_epoch = checkpoint['epoch'] + 1
         current_resolution = checkpoint['resolution']
         config = checkpoint['config']
-        model.Gd.set_fourier_state(checkpoint['Gd_fourier_state'])
+        # model.Gd.set_fourier_state(checkpoint['Gd_fourier_state'])
         print(f"Resumed training from epoch {start_epoch}, resolution {current_resolution}")
 
     # Set up preprocessing
