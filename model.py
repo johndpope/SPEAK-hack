@@ -275,11 +275,11 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
 
-        input_dim=2048
+        # input_dim=2048
           # Axial Attention Feature Selectors
-        self.axial_identity = AxialFeatureSelector(input_dim, input_dim)
-        self.axial_emotion = AxialFeatureSelector(input_dim, input_dim)
-        self.axial_pose = AxialFeatureSelector(input_dim, input_dim)
+        # self.axial_identity = AxialFeatureSelector(input_dim, input_dim)
+        # self.axial_emotion = AxialFeatureSelector(input_dim, input_dim)
+        # self.axial_pose = AxialFeatureSelector(input_dim, input_dim)
 
         # CIPSGenerator-based generator
         self.Gd = CIPSGenerator(input_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
@@ -326,12 +326,12 @@ class IRFD(nn.Module):
 
 
         # Apply axial attention feature selection
-        fi_s = self.axial_identity(fi_s)
-        fe_s = self.axial_emotion(fe_s)
-        fp_s = self.axial_pose(fp_s)
-        fi_t = self.axial_identity(fi_t)
-        fe_t = self.axial_emotion(fe_t)
-        fp_t = self.axial_pose(fp_t)
+        # fi_s = self.axial_identity(fi_s)
+        # fe_s = self.axial_emotion(fe_s)
+        # fp_s = self.axial_pose(fp_s)
+        # fi_t = self.axial_identity(fi_t)
+        # fe_t = self.axial_emotion(fe_t)
+        # fp_t = self.axial_pose(fp_t)
 
         
         # Randomly swap one type of feature (keeping this functionality)

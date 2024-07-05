@@ -272,8 +272,10 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
             if global_step % config.training.save_steps == 0:
                 save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
+                state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
+                    
                 accelerator.save({
-                    'model': accelerator.unwrap_model(model).state_dict(),
+                    'model': state_dict,
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
@@ -399,7 +401,6 @@ def main():
         emotion_weight=config.loss.emotion_weight,
         identity_weight=config.loss.identity_weight
     )
-
     # Check for existing checkpoint
     start_epoch = 0
     latest_checkpoint = None
@@ -410,11 +411,22 @@ def main():
             latest_checkpoint = os.path.join(config.training.output_dir, latest_checkpoint)
             print(f"👑 Found latest checkpoint: {latest_checkpoint}")
 
+    # Load checkpoint if exists
+    if latest_checkpoint:
+        checkpoint = torch.load(latest_checkpoint, map_location=accelerator.device)
+        model.load_state_dict(checkpoint['model'])
+        optimizer_G.load_state_dict(checkpoint['optimizer_G'])
+        optimizer_D.load_state_dict(checkpoint['optimizer_D'])
+        start_epoch = checkpoint['epoch'] + 1
+        current_resolution = checkpoint['resolution']
+        config = checkpoint['config']
+        model.Gd.set_fourier_state(checkpoint['Gd_fourier_state'])
+        print(f"Resumed training from epoch {start_epoch}, resolution {current_resolution}")
 
     # Set up preprocessing
     preprocess = transforms.Compose([
         transforms.Resize((256, 256)),  # Start with the highest resolution
-        transforms.RandomHorizontalFlip(),
+        # transforms.RandomHorizontalFlip(),
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5]),
     ])
@@ -508,14 +520,16 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 if accelerator.is_main_process:
+                    state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
                     accelerator.save({
-                        'model': accelerator.unwrap_model(model).state_dict(),
+                        'model': state_dict,
                         'optimizer_G': optimizer_G.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(),
                         'epoch': epoch,
                         'resolution': resolution,
                         'config': config,
                     }, os.path.join(config.training.output_dir, f"checkpoint-resolution-{resolution}-epoch-{epoch}.pth"))
+
 
             
 
