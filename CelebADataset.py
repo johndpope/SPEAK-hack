@@ -57,7 +57,11 @@ class AffectNetDataset(Dataset):
 
     def remove_bg(self, image, cache_path=None):
         if cache_path and os.path.exists(cache_path):
-            return Image.open(cache_path).convert("RGB")
+            try:
+                img =  Image.open(cache_path).convert("RGB")
+                return img
+            except Exception as e:
+                return image
 
         try:
             img_byte_arr = io.BytesIO()
