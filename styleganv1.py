@@ -520,6 +520,8 @@ class StyleGenerator(nn.Module):
         # Synthesis network
         self.synthesis = SynthesisNetwork()
 
+        # We'll create the BatchNorm layer in the forward pass
+        self.bn = None
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
 
@@ -551,10 +553,18 @@ class StyleGenerator(nn.Module):
                     w[:, mix_layer:] = w2[:, mix_layer:]
                 self.logger.debug(f"Applied style mixing at layer {mix_layer}")
 
-        img = self.synthesis(w)
-        self.logger.debug(f"Generated image shape: {img.shape}")
+        x = self.synthesis(w)
 
-        return img
+        # Create or update BatchNorm layer if necessary
+        if self.bn is None or self.bn.num_features != x.size(1):
+            self.bn = nn.BatchNorm2d(x.size(1)).to(x.device)
+
+
+        x = self.bn(x)
+
+        self.logger.debug(f"Generated image shape: {x.shape}")
+
+        return x
 
 class SynthesisNetwork(nn.Module):
     def __init__(self, resolution=256, fmap_base=8192, fmap_max=512):
@@ -628,9 +638,7 @@ class StyleDiscriminator(nn.Module):
     def __init__(self, resolution=256, fmap_base=8192, num_channels=3, fmap_max=512):
         super().__init__()
         self.resolution_log2 = int(np.log2(resolution))
-        self.fmap_base = fmap_base
-        self.fmap_max = fmap_max
-
+        self.nf = lambda stage: min(int(fmap_base / (2.0 ** stage)), fmap_max)
 
         self.fromrgb = spectral_norm(nn.Conv2d(num_channels, self.nf(self.resolution_log2-1), kernel_size=1))
         
@@ -638,13 +646,13 @@ class StyleDiscriminator(nn.Module):
         for res in range(self.resolution_log2, 2, -1):
             in_channels = self.nf(res-1)
             out_channels = self.nf(res-2)
-            self.blocks.append(spectral_norm(DiscriminatorBlock(in_channels, out_channels)))
+            self.blocks.append(DiscriminatorBlock(in_channels, out_channels))
 
         self.final_conv = spectral_norm(nn.Conv2d(self.nf(2), self.nf(1), kernel_size=3, padding=1))
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.dense0 = spectral_norm(nn.Linear(self.nf(1), self.nf(0)))
         self.dense1 = spectral_norm(nn.Linear(self.nf(0), 1))
-
-      
+        
         self.logger = logging.getLogger(__name__)
         self.logger.setLevel(logging.DEBUG)
 
@@ -678,8 +686,8 @@ class StyleDiscriminator(nn.Module):
 class DiscriminatorBlock(nn.Module):
     def __init__(self, in_channels, out_channels):
         super().__init__()
-        self.conv1 = nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=2)
+        self.conv1 = spectral_norm(nn.Conv2d(in_channels, in_channels, kernel_size=3, padding=1))
+        self.conv2 = spectral_norm(nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, stride=2))
 
     def forward(self, x):
         x = F.leaky_relu(self.conv1(x), 0.2)
