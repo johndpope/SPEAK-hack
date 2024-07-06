@@ -24,6 +24,9 @@ from PIL import Image, ImageDraw, ImageFont
 import torchvision.transforms as transforms
 import time
 
+
+
+
 def save_debug_images(x_s, x_t, x_s_recon, x_t_recon, step, resolution, output_dir):
     def denorm(x):
         return (x * 0.5 + 0.5).clamp(0, 1)
@@ -131,7 +134,6 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples):
     gradients = gradients.reshape(batch_size, -1)
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
-
 def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
@@ -139,81 +141,90 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
     progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch+1}")
 
+    # Label smoothing
+    real_label = 0.9
+    fake_label = 0.1
+
+    def add_instance_noise(x, std=0.1):
+        return x + torch.randn_like(x) * std
+
     for step, batch in enumerate(dataloader):
         with accelerator.accumulate(model):
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
-            # print(f"Input shapes: x_s: {x_s.shape}, x_t: {x_t.shape}")
 
-             # Train Discriminator
+            # Train Discriminator
             optimizer_D.zero_grad()
 
-            outputs = model(x_s, x_t)
-            x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
+            # Real images
+            d_real_s = model.D(add_instance_noise(x_s))
+            d_real_t = model.D(add_instance_noise(x_t))
+            loss_D_real = (F.binary_cross_entropy_with_logits(d_real_s, torch.full_like(d_real_s, real_label)) +
+                           F.binary_cross_entropy_with_logits(d_real_t, torch.full_like(d_real_t, real_label))) / 2
 
-            d_real_s = model.D(x_s)
-            d_real_t = model.D(x_t)
-            d_fake_s = model.D(x_s_recon.detach())
-            d_fake_t = model.D(x_t_recon.detach())
+            # Fake images
+            with torch.no_grad():
+                outputs = model(x_s, x_t)
+                x_s_recon, x_t_recon = outputs[0], outputs[1]
 
-            # Hinge loss for StyleGAN
-            loss_D_real = (F.relu(1 - d_real_s) + F.relu(1 - d_real_t)).mean()
-            loss_D_fake = (F.relu(1 + d_fake_s) + F.relu(1 + d_fake_t)).mean()
-            # print("loss_D_real:",loss_D_real)
-            # print("loss_D_fake:",loss_D_fake)
-            
+            d_fake_s = model.D(add_instance_noise(x_s_recon.detach()))
+            d_fake_t = model.D(add_instance_noise(x_t_recon.detach()))
+            loss_D_fake = (F.binary_cross_entropy_with_logits(d_fake_s, torch.full_like(d_fake_s, fake_label)) +
+                           F.binary_cross_entropy_with_logits(d_fake_t, torch.full_like(d_fake_t, fake_label))) / 2
 
             # R1 regularization
             r1_reg_s = compute_r1_reg(model.D, x_s)
             r1_reg_t = compute_r1_reg(model.D, x_t)
             r1_reg = (r1_reg_s + r1_reg_t) / 2
-            # print("r1_reg:",r1_reg)
 
             loss_D = loss_D_real + loss_D_fake + config.training.r1_weight * r1_reg
 
             accelerator.backward(loss_D)
             optimizer_D.step()
 
-            # Train Generator
-            optimizer_G.zero_grad()
+            # Train Generator (less frequently)
+            if step % config.training.G_steps == 0:
+                optimizer_G.zero_grad()
 
-            l_pose_landmark, l_emotion, l_identity, l_recon = criterion(
-                x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
-                emotion_labels_s, emotion_labels_t
-            )
-            
-            d_fake_s = model.D(x_s_recon)
-            d_fake_t = model.D(x_t_recon)
-            
-            # Hinge loss for StyleGAN
-            loss_G_adv = -(d_fake_s + d_fake_t).mean()
+                outputs = model(x_s, x_t)
+                x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
 
-            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv 
+                l_pose_landmark, l_emotion, l_identity, l_recon = criterion(
+                    x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
+                    emotion_labels_s, emotion_labels_t
+                )
+                
+                d_fake_s = model.D(x_s_recon)
+                d_fake_t = model.D(x_t_recon)
+                
+                loss_G_adv = (F.binary_cross_entropy_with_logits(d_fake_s, torch.full_like(d_fake_s, real_label)) +
+                               F.binary_cross_entropy_with_logits(d_fake_t, torch.full_like(d_fake_t, real_label))) / 2
 
-            accelerator.backward(loss_G)
-            
-            if config.training.grad_clip:
-                accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
-            
-            optimizer_G.step()
+                loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv 
+
+                accelerator.backward(loss_G)
+                
+                if config.training.grad_clip:
+                    accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
+                
+                optimizer_G.step()
 
         if accelerator.sync_gradients:
             progress_bar.update(1)
-            total_loss_G += loss_G.detach().float()
+            total_loss_G += loss_G.detach().float() if 'loss_G' in locals() else 0
             total_loss_D += loss_D.detach().float()
 
         global_step = epoch * len(dataloader) + step
         if accelerator.is_main_process:
             if step % config.training.logging_steps == 0:
-                print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item():.4f}, loss_D = {loss_D.item():.4f}")
-                writer.add_scalar('Loss/Train/Generator', loss_G.item(), global_step)
+                print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item() if 'loss_G' in locals() else 0:.4f}, loss_D = {loss_D.item():.4f}")
+                writer.add_scalar('Loss/Train/Generator', loss_G.item() if 'loss_G' in locals() else 0, global_step)
                 writer.add_scalar('Loss/Train/Discriminator', loss_D.item(), global_step)
-                writer.add_scalar('Loss/Train/Pose_Landmark', l_pose_landmark.item(), global_step)
-                writer.add_scalar('Loss/Train/Emotion', l_emotion.item(), global_step)
-                writer.add_scalar('Loss/Train/Identity', l_identity.item(), global_step)
-                writer.add_scalar('Loss/Train/Reconstruction', l_recon.item(), global_step)
+                writer.add_scalar('Loss/Train/Pose_Landmark', l_pose_landmark.item() if 'l_pose_landmark' in locals() else 0, global_step)
+                writer.add_scalar('Loss/Train/Emotion', l_emotion.item() if 'l_emotion' in locals() else 0, global_step)
+                writer.add_scalar('Loss/Train/Identity', l_identity.item() if 'l_identity' in locals() else 0, global_step)
+                writer.add_scalar('Loss/Train/Reconstruction', l_recon.item() if 'l_recon' in locals() else 0, global_step)
                 writer.add_scalar('Loss/Train/R1_Regularization', r1_reg.item(), global_step)
-                # writer.add_scalar('Loss/Train/PathLengthRegularization', pl_reg.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
@@ -222,7 +233,7 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
 
                 accelerator.save({
-                    'model_state_dict': model.state_dict(),  # Save only the state dict
+                    'model_state_dict': model.state_dict(),
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
@@ -264,7 +275,7 @@ def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, c
     model.eval()
     total_loss = 0
 
-    
+
     with torch.no_grad():
         for batch in dataloader:
             x_s, x_t = batch["source_image"], batch["target_image"]
@@ -311,7 +322,20 @@ def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, c
 
             loss = sum(irfd_loss) + config.training.label_balance * stylegan_loss_value
             total_loss += loss.detach().float()
+            if torch.isnan(irfd_loss):
+                print("🔥 irfd_loss NaN loss detected")
+                # Maybe print out the last few batches of data, model outputs, etc.
+                raise ValueError("🔥 irfd_loss NaN loss detected")
 
+
+            if torch.isnan(stylegan_loss_value):
+                print("🔥 stylegan_loss_value  detected")
+                # Maybe print out the last few batches of data, model outputs, etc.
+                raise ValueError("🔥 stylegan_loss_value  detected")
+            if torch.isnan(loss):
+                print("🔥 NaN loss detected")
+                # Maybe print out the last few batches of data, model outputs, etc.
+                raise ValueError("🔥 NaN loss detected")
 
     return total_loss.item() / len(dataloader)
 
@@ -332,22 +356,10 @@ def main():
 
     model = IRFD(max_resolution=256)
     
+    optimizer_G = torch.optim.Adam(model.Gd.parameters(), lr=config.training.G_lr)
+    optimizer_D = torch.optim.Adam(model.D.parameters(), lr=config.training.D_lr)
+
  
-    optimizer_G = AdamW(
-        [p for n, p in model.named_parameters() if not n.startswith('D.')], 
-        lr=config.optimization.learning_rate, 
-        betas=(config.optimization.beta1, config.optimization.beta2),
-        eps=config.optimization.eps,
-        weight_decay=config.optimization.weight_decay
-    )
-    
-    optimizer_D = AdamW(
-        model.D.parameters(), 
-        lr=config.optimization.learning_rate, 
-        betas=(config.optimization.beta1, config.optimization.beta2),
-        eps=config.optimization.eps,
-        weight_decay=config.optimization.weight_decay
-    )
 
     criterion = IRFDLoss(
         alpha=config.loss.alpha,
@@ -389,7 +401,7 @@ def main():
         test =  AffectNetDataset(
             root_dir="/media/oem/12TB/AffectNet/train",
             preprocess=preprocess,
-            remove_background=True,
+            remove_background=False,
             use_greenscreen=False,
             cache_dir='/media/oem/12TB/AffectNet/train/cache'
         )
@@ -406,6 +418,9 @@ def main():
     model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion = accelerator.prepare(
         model, optimizer_G, optimizer_D, train_dataloader, val_dataloader, criterion
     )
+
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
 
     stylegan_loss = StyleGANLoss(accelerator.device)
     scheduler_G = ReduceLROnPlateau(optimizer_G, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
@@ -424,6 +439,7 @@ def main():
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
+            transforms.Lambda(lambda x: (x / 255.0)),  # Normalize to [0, 1]
             ])
 
         # preprocess = transforms.Compose([

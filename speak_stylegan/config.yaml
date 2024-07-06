@@ -18,7 +18,10 @@ model:
   latent_dim: 512
   n_mlp: 8
 training:
-  r1_weight: 10
+  G_steps: 5
+  D_lr: 5.0e-05
+  G_lr: 0.0002
+  r1_weight: 1
   output_dir: ./speak_stylegan
   num_epochs: 100
   train_batch_size: 1

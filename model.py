@@ -183,13 +183,27 @@ class IRFDLoss(nn.Module):
         self.mp_face_mesh = mp.solutions.face_mesh
         self.face_mesh = self.mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1)
 
+    def check_tensor(self,tensor, name):
+        if torch.isnan(tensor).any():
+            print(f"Warning: NaN values found in {name}")
+        if torch.isinf(tensor).any():
+            print(f"Warning: Inf values found in {name}")
+
+
     def detect_landmarks(self, images):
         batch_size = images.size(0)
         landmarks_batch = []
 
         for i in range(batch_size):
             image = images[i]
-            image_np = (image.detach().cpu().permute(1, 2, 0).numpy() * 255).astype(np.uint8)
+            # Before the conversion
+            self.check_tensor(image, "image tensor")
+
+            image_np = image.detach().cpu().permute(1, 2, 0).numpy()
+            image_np = np.clip(image_np, 0, 1)  # Ensure values are between 0 and 1
+            image_np = (image_np * 255).astype(np.uint8)
+            
+            
             results = self.face_mesh.process(image_np)
             if results.multi_face_landmarks:
                 landmarks = np.array([(lm.x, lm.y, lm.z) for lm in results.multi_face_landmarks[0].landmark])

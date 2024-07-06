@@ -15,7 +15,10 @@ model:
 
 # Training configuration
 training:
-  r1_weight: 10 #StyleGAN2 default: In the original StyleGAN2 paper, they used an r1_weight of 10 for most of their experiments.
+  G_steps: 5  # Train generator every 5 steps
+  D_lr: 0.00005  # Discriminator learning rate
+  G_lr: 0.0002  # Generator learning rate
+  r1_weight: 1 #StyleGAN2 default: In the original StyleGAN2 paper, they used an r1_weight of 10 for most of their experiments.
   output_dir: "./speak_stylegan"
   num_epochs: 100
   train_batch_size: 1

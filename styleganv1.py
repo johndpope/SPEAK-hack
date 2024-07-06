@@ -556,11 +556,11 @@ class StyleGenerator(nn.Module):
         x = self.synthesis(w)
 
         # Create or update BatchNorm layer if necessary
-        if self.bn is None or self.bn.num_features != x.size(1):
-            self.bn = nn.BatchNorm2d(x.size(1)).to(x.device)
+        # if self.bn is None or self.bn.num_features != x.size(1):
+        #     self.bn = nn.BatchNorm2d(x.size(1)).to(x.device)
 
 
-        x = self.bn(x)
+        # x = self.bn(x)
 
         self.logger.debug(f"Generated image shape: {x.shape}")
 
