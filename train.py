@@ -143,34 +143,31 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
         with accelerator.accumulate(model):
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
+            # print(f"Input shapes: x_s: {x_s.shape}, x_t: {x_t.shape}")
 
-            # Generate noise for StyleGAN
-            noise = torch.randn(x_s.size(0), 512).to(x_s.device)
-
-            # Train Discriminator
+             # Train Discriminator
             optimizer_D.zero_grad()
 
-            outputs = model(x_s, x_t, noise)
+            outputs = model(x_s, x_t)
             x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
 
-            real_features_s = fi_s
-            real_features_t = fi_t
-            fake_features_s = x_s_recon
-            fake_features_t = x_t_recon
-
-            d_real_s = model.D(real_features_s, model.current_resolution)
-            d_real_t = model.D(real_features_t, model.current_resolution)
-            d_fake_s = model.D(fake_features_s.detach(), model.current_resolution)
-            d_fake_t = model.D(fake_features_t.detach(), model.current_resolution)
+            d_real_s = model.D(x_s)
+            d_real_t = model.D(x_t)
+            d_fake_s = model.D(x_s_recon.detach())
+            d_fake_t = model.D(x_t_recon.detach())
 
             # Hinge loss for StyleGAN
             loss_D_real = (F.relu(1 - d_real_s) + F.relu(1 - d_real_t)).mean()
             loss_D_fake = (F.relu(1 + d_fake_s) + F.relu(1 + d_fake_t)).mean()
+            # print("loss_D_real:",loss_D_real)
+            # print("loss_D_fake:",loss_D_fake)
+            
 
             # R1 regularization
-            r1_reg_s = compute_r1_reg(model.D, real_features_s, model.current_resolution)
-            r1_reg_t = compute_r1_reg(model.D, real_features_t, model.current_resolution)
+            r1_reg_s = compute_r1_reg(model.D, x_s)
+            r1_reg_t = compute_r1_reg(model.D, x_t)
             r1_reg = (r1_reg_s + r1_reg_t) / 2
+            # print("r1_reg:",r1_reg)
 
             loss_D = loss_D_real + loss_D_fake + config.training.r1_weight * r1_reg
 
@@ -185,16 +182,13 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 emotion_labels_s, emotion_labels_t
             )
             
-            d_fake_s = model.D(x_s_recon, model.current_resolution)
-            d_fake_t = model.D(x_t_recon, model.current_resolution)
+            d_fake_s = model.D(x_s_recon)
+            d_fake_t = model.D(x_t_recon)
             
             # Hinge loss for StyleGAN
             loss_G_adv = -(d_fake_s + d_fake_t).mean()
 
-            # Path length regularization
-            pl_reg = compute_path_length_regularization(model.Gd, noise, x_s_recon, x_t_recon)
-
-            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv + config.training.pl_weight * pl_reg
+            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv 
 
             accelerator.backward(loss_G)
             
@@ -219,16 +213,16 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 writer.add_scalar('Loss/Train/Identity', l_identity.item(), global_step)
                 writer.add_scalar('Loss/Train/Reconstruction', l_recon.item(), global_step)
                 writer.add_scalar('Loss/Train/R1_Regularization', r1_reg.item(), global_step)
-                writer.add_scalar('Loss/Train/PathLengthRegularization', pl_reg.item(), global_step)
+                # writer.add_scalar('Loss/Train/PathLengthRegularization', pl_reg.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
             if global_step % config.training.save_steps == 0:
                 save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
-        
+
                 accelerator.save({
-                    'model': model,
+                    'model_state_dict': model.state_dict(),  # Save only the state dict
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
@@ -238,9 +232,9 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
-def compute_r1_reg(D, real_img, resolution):
+def compute_r1_reg(D, real_img):
     real_img = real_img.requires_grad_(True)
-    real_pred = D(real_img, resolution)
+    real_pred = D(real_img)
     
     grad_real = torch.autograd.grad(
         outputs=real_pred.sum(), inputs=real_img, create_graph=True
@@ -375,7 +369,7 @@ def main():
     # Load checkpoint if exists
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=accelerator.device)
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model_state_dict'])  # Load the state dict
         optimizer_G.load_state_dict(checkpoint['optimizer_G'])
         optimizer_D.load_state_dict(checkpoint['optimizer_D'])
         start_epoch = checkpoint['epoch'] + 1
@@ -418,7 +412,7 @@ def main():
     scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
-    resolutions = [64, 128, 256]
+    resolutions = [256] #64, 128, 
     epochs_per_resolution = config.training.epochs_per_resolution
 
     for resolution in resolutions:

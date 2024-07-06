@@ -18,216 +18,10 @@ import lpips
 from torch.utils.checkpoint import checkpoint
 import math
 import random
-
-
-class ConstantInput(nn.Module):
-    def __init__(self, channel, size=4):
-        super().__init__()
-        self.input = nn.Parameter(torch.randn(1, channel, size, size))
-
-    def forward(self, batch_size):
-        return self.input.repeat(batch_size, 1, 1, 1)
-
-class AdaIN(nn.Module):
-    def __init__(self, in_channel, style_dim):
-        super().__init__()
-        self.norm = nn.InstanceNorm2d(in_channel)
-        self.style = nn.Linear(style_dim, in_channel * 2)
-
-    def forward(self, input, style):
-        style = self.style(style).unsqueeze(2).unsqueeze(3)
-        gamma, beta = style.chunk(2, 1)
-        out = self.norm(input)
-        return gamma * out + beta
-
-class StyleConv(nn.Module):
-    def __init__(self, in_channel, out_channel, kernel_size, style_dim, upsample=False):
-        super().__init__()
-        self.conv = nn.Conv2d(
-            in_channel, out_channel, kernel_size, padding=kernel_size // 2
-        )
-        self.adain = AdaIN(out_channel, style_dim)
-        self.upsample = upsample
-
-    def forward(self, input, style):
-        out = self.conv(input)
-        if self.upsample:
-            out = F.interpolate(out, scale_factor=2, mode='bilinear', align_corners=False)
-        out = self.adain(out, style)
-        return out
-
-class ToRGB(nn.Module):
-    def __init__(self, in_channel, style_dim, upsample=True):
-        super().__init__()
-        self.upsample = upsample
-        self.conv = nn.Conv2d(in_channel, 3, 1)
-        self.adain = AdaIN(3, style_dim)
-
-    def forward(self, input, style, skip=None):
-        out = self.conv(input)
-        out = self.adain(out, style)
-
-        if skip is not None:
-            if self.upsample:
-                skip = F.interpolate(skip, scale_factor=2, mode='bilinear', align_corners=False)
-            out = out + skip
-
-        return out
-
-class PixelNorm(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-    def forward(self, input):
-        return input * torch.rsqrt(torch.mean(input ** 2, dim=1, keepdim=True) + 1e-8)
-
-
-class StyleGANGenerator(nn.Module):
-    def __init__(self, style_dim=6144, n_mlp=8, max_resolution=256):
-        super().__init__()
-        
-        self.style_dim = style_dim  # 3 * 2048 (3 ResNet50 features)
-        self.max_resolution = max_resolution
-
-        # Mapping network
-        layers = []
-        for i in range(n_mlp):
-            layers.append(nn.Linear(style_dim, style_dim))
-            layers.append(nn.LeakyReLU(0.2))
-        self.style = nn.Sequential(*layers)
-
-        self.channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256,
-            128: 128,
-            256: 64
-        }
-
-        # Initial input processing
-        self.input = nn.Linear(style_dim, 4 * 4 * self.channels[4])
-        self.conv1 = StyleConv(self.channels[4], self.channels[4], 3, style_dim)
-        self.to_rgb1 = ToRGB(self.channels[4], style_dim, upsample=False)
-
-        self.log_size = int(math.log(max_resolution, 2))
-        self.num_layers = (self.log_size - 2) * 2 + 1
-
-        self.convs = nn.ModuleList()
-        self.to_rgbs = nn.ModuleList()
-
-        in_channel = self.channels[4]
-        for i in range(3, self.log_size + 1):
-            out_channel = self.channels[2 ** i]
-            self.convs.append(StyleConv(in_channel, out_channel, 3, style_dim, upsample=True))
-            self.convs.append(StyleConv(out_channel, out_channel, 3, style_dim))
-            self.to_rgbs.append(ToRGB(out_channel, style_dim))
-            in_channel = out_channel
-
-    def forward(self, features, resolution=None, noise=None, return_latents=False):
-        if resolution is None:
-            resolution = self.max_resolution
-        
-        styles = self.style(features)
-
-        # Initial processing
-        out = self.input(styles).view(-1, self.channels[4], 4, 4)
-        
-        if noise is not None:
-            out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
-        
-        out = self.conv1(out, styles)
-        skip = self.to_rgb1(out, styles)
-
-        for i, (conv1, conv2, to_rgb) in enumerate(zip(self.convs[::2], self.convs[1::2], self.to_rgbs)):
-            out = conv1(out, styles)
-            if noise is not None:
-                out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
-            out = conv2(out, styles)
-            if noise is not None:
-                out = out + noise.reshape(out.shape[0], 1, 1, 1) * torch.randn_like(out)
-            skip = to_rgb(out, styles, skip)
-
-            if out.shape[-1] == resolution:
-                break
-
-        image = skip
-
-        if return_latents:
-            return image, styles
-        else:
-            return image
-
-
-class ConvBlock(nn.Module):
-    def __init__(self, in_channel, out_channel, kernel_size, padding, downsample=False):
-        super().__init__()
-        self.conv = spectral_norm(nn.Conv2d(in_channel, out_channel, kernel_size, padding=padding))
-        self.downsample = downsample
-
-    def forward(self, input):
-        out = self.conv(input)
-        if self.downsample:
-            out = F.avg_pool2d(out, 2)
-        return out
-
-class StyleGANDiscriminator(nn.Module):
-    def __init__(self, max_resolution=1024, channel_multiplier=2):
-        super().__init__()
-        
-        self.max_resolution = max_resolution
-        
-        self.channels = {
-            4: 512,
-            8: 512,
-            16: 512,
-            32: 512,
-            64: 256 * channel_multiplier,
-            128: 128 * channel_multiplier,
-            256: 64 * channel_multiplier
-        }
-
-        self.from_rgb = nn.ModuleDict()
-        for res in self.channels.keys():
-            self.from_rgb[str(res)] = ConvBlock(3, self.channels[res], 1, 0)
-
-        self.convs = nn.ModuleList()
-
-        log_size = int(math.log(max_resolution, 2))
-
-        in_channel = self.channels[max_resolution]
-
-        for i in range(log_size, 2, -1):
-            out_channel = self.channels[2 ** (i - 1)]
-            self.convs.append(ConvBlock(in_channel, out_channel, 3, 1))
-            self.convs.append(ConvBlock(out_channel, out_channel, 3, 1, downsample=True))
-            in_channel = out_channel
-
-        self.final_conv = ConvBlock(in_channel, self.channels[4], 3, 1)
-        self.final_linear = nn.Sequential(
-            spectral_norm(nn.Linear(self.channels[4] * 4 * 4, 1)),
-        )
-
-    def forward(self, input, resolution=None):
-        if resolution is None:
-            resolution = self.max_resolution
-        
-        out = self.from_rgb[str(resolution)](input)
-
-        for conv in self.convs:
-            out = conv(out)
-            if out.shape[-1] == 4:
-                break
-
-        out = self.final_conv(out)
-        out = out.view(out.shape[0], -1)
-        out = self.final_linear(out)
-
-        return out
-
-
-
+from styleganv1 import StyleGenerator,StyleDiscriminator
+import logging
+import torchvision.utils as vutils
+import matplotlib.pyplot as plt
 class IRFD(nn.Module):
     def __init__(self, max_resolution=256):
         super(IRFD, self).__init__()
@@ -238,21 +32,26 @@ class IRFD(nn.Module):
         self.Ep = self._create_encoder()  # Pose encoder
         
 
-        # CIPSGenerator-based generator
-        self.Gd = StyleGANGenerator(style_dim=2048*3,max_resolution=max_resolution)  # 2048*3 because we're concatenating 3 encoder outputs
-        
-        # StyleGAN Discriminator
-        self.D = StyleGANDiscriminator(max_resolution=max_resolution)
+        self.Gd = StyleGenerator(input_dim=6144) 
+        self.D = StyleDiscriminator()
         
         self.Cm = nn.Linear(2048, 8)  # 8 = num_emotion_classes
         
         self.max_resolution = max_resolution
         self.current_resolution = max_resolution
 
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.DEBUG)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d) or isinstance(m, nn.Linear):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def adjust_for_resolution(self,resolution):
         self.current_resolution = resolution
-
 
 
     def _create_encoder(self):
@@ -260,10 +59,24 @@ class IRFD(nn.Module):
         return nn.Sequential(*list(encoder.children())[:-1])
     
     def _prepare_generator_input(self, *features):
-        # Flatten and concatenate the encoder outputs
-        return torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
+        self.logger.debug(f"Preparing generator input. Feature shapes: {[f.shape for f in features]}")
+        # Flatten and concatenate features
+        concat_features = torch.cat([f.view(f.size(0), -1) for f in features], dim=1)
+        self.logger.debug(f"Concatenated feature shape: {concat_features.shape}")
+        return concat_features
+
     
-    def forward(self, x_s, x_t, noise):
+    def _log_feature_stats(self, tensor, name):
+        self.logger.debug(f"{name} stats: mean={tensor.mean().item():.4f}, std={tensor.std().item():.4f}, min={tensor.min().item():.4f}, max={tensor.max().item():.4f}")
+
+    def _visualize_feature_maps(self, tensor, name, num_channels=8):
+        if tensor.dim() == 4:
+            grid = vutils.make_grid(tensor[:num_channels].unsqueeze(1), normalize=True, scale_each=True)
+            vutils.save_image(grid, f"{name}_feature_maps.png")
+    
+    def forward(self, x_s, x_t):
+        self.logger.debug(f"Input shapes: x_s={x_s.shape}, x_t={x_t.shape}")
+
         # Encode source and target images
         fi_s = checkpoint(self.Ei, x_s)
         fe_s = checkpoint(self.Ee, x_s)
@@ -273,8 +86,12 @@ class IRFD(nn.Module):
         fe_t = checkpoint(self.Ee, x_t)
         fp_t = checkpoint(self.Ep, x_t)
 
+        self.logger.debug(f"Encoded feature shapes: fi_s={fi_s.shape}, fe_s={fe_s.shape}, fp_s={fp_s.shape}")
+        self._log_feature_stats(fi_s, "Identity features")
+        self._log_feature_stats(fe_s, "Emotion features")
+        self._log_feature_stats(fp_s, "Pose features")
         
-        # Randomly swap one type of feature (keeping this functionality)
+        # Randomly swap one type of feature
         swap_type = torch.randint(0, 3, (1,)).item()
         if swap_type == 0:
             fi_s, fi_t = fi_t, fi_s
@@ -287,14 +104,21 @@ class IRFD(nn.Module):
         gen_input_s = self._prepare_generator_input(fi_s, fe_s, fp_s)
         gen_input_t = self._prepare_generator_input(fi_t, fe_t, fp_t)
         
-        # Generate reconstructed images using StyleGANGenerator
-        x_s_recon = self.Gd(gen_input_s, self.current_resolution, noise=noise)
-        x_t_recon = self.Gd(gen_input_t, self.current_resolution, noise=noise)
+        self.logger.debug(f"Generator input shapes: gen_input_s={gen_input_s.shape}, gen_input_t={gen_input_t.shape}")
         
+        # Generate reconstructed images using StyleGANGenerator
+        x_s_recon = self.Gd(gen_input_s)
+        x_t_recon = self.Gd(gen_input_t)
+        
+        self.logger.debug(f"Reconstructed image shapes: x_s_recon={x_s_recon.shape}, x_t_recon={x_t_recon.shape}")
+        self._visualize_feature_maps(x_s_recon, "source_reconstruction")
+        self._visualize_feature_maps(x_t_recon, "target_reconstruction")
         
         # Apply softmax to emotion predictions
         emotion_pred_s = torch.softmax(self.Cm(fe_s.view(fe_s.size(0), -1)), dim=1)
         emotion_pred_t = torch.softmax(self.Cm(fe_t.view(fe_t.size(0), -1)), dim=1)
+        
+        self.logger.debug(f"Emotion prediction shapes: emotion_pred_s={emotion_pred_s.shape}, emotion_pred_t={emotion_pred_t.shape}")
       
         return x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, emotion_pred_s, emotion_pred_t
 

@@ -55,9 +55,30 @@ class AffectNetDataset(Dataset):
         image_hash = hashlib.md5(image_path.encode()).hexdigest()
         return os.path.join(self.cache_dir, f"{image_hash}.png")
 
+    def check_image_quality(self, image):
+        # Check if the image is mostly transparent or black
+        np_image = np.array(image)
+        if np_image.shape[2] == 4:  # RGBA
+            non_transparent = np_image[:,:,3].sum()
+            total_pixels = np_image.shape[0] * np_image.shape[1]
+            if non_transparent / total_pixels < 0.1:  # Less than 10% non-transparent
+                return False
+        
+        # Check if the image is too dark
+        gray_image = np.array(image.convert('L'))
+        if np.mean(gray_image) < 30:  # Average pixel value less than 30 (out of 255)
+            return False
+        
+        return True
+        
     def remove_bg(self, image, cache_path=None):
         if cache_path and os.path.exists(cache_path):
-            return Image.open(cache_path).convert("RGB")
+            bg_removed_image = Image.open(cache_path).convert("RGB")
+            if self.check_image_quality(bg_removed_image):
+                return bg_removed_image
+            else:
+                print(f"Cached background-removed image failed quality check. Using original image.")
+                return image.convert("RGB")
 
         try:
             img_byte_arr = io.BytesIO()
@@ -74,10 +95,14 @@ class AffectNetDataset(Dataset):
 
             final_image = final_image.convert("RGB")
 
-            if cache_path:
-                final_image.save(cache_path)
+            if self.check_image_quality(final_image):
+                if cache_path:
+                    final_image.save(cache_path)
+                return final_image
+            else:
+                print(f"Background-removed image failed quality check. Using original image.")
+                return image.convert("RGB")
 
-            return final_image
         except Exception as e:
             print(f"Background removal failed: {str(e)}. Returning original image.")
             return image.convert("RGB")

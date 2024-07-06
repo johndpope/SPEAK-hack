@@ -18,9 +18,10 @@ model:
   latent_dim: 512
   n_mlp: 8
 training:
+  r1_weight: 10
   output_dir: ./speak_stylegan
   num_epochs: 100
-  train_batch_size: 2
+  train_batch_size: 1
   eval_batch_size: 16
   save_image_steps: 100
   gradient_accumulation_steps: 1
@@ -46,7 +47,7 @@ dataset:
   image_size: 64
   val_split: 0.2
 optimization:
-  learning_rate: 0.0002
+  learning_rate: 0.0001
   beta1: 0.5
   beta2: 0.999
   eps: 1.0e-08
