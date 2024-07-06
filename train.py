@@ -322,20 +322,7 @@ def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, c
 
             loss = sum(irfd_loss) + config.training.label_balance * stylegan_loss_value
             total_loss += loss.detach().float()
-            if torch.isnan(irfd_loss):
-                print("🔥 irfd_loss NaN loss detected")
-                # Maybe print out the last few batches of data, model outputs, etc.
-                raise ValueError("🔥 irfd_loss NaN loss detected")
 
-
-            if torch.isnan(stylegan_loss_value):
-                print("🔥 stylegan_loss_value  detected")
-                # Maybe print out the last few batches of data, model outputs, etc.
-                raise ValueError("🔥 stylegan_loss_value  detected")
-            if torch.isnan(loss):
-                print("🔥 NaN loss detected")
-                # Maybe print out the last few batches of data, model outputs, etc.
-                raise ValueError("🔥 NaN loss detected")
 
     return total_loss.item() / len(dataloader)
 
@@ -361,13 +348,7 @@ def main():
 
  
 
-    criterion = IRFDLoss(
-        alpha=config.loss.alpha,
-        lpips_weight=config.loss.lpips_weight,
-        landmark_weight=config.loss.landmark_weight,
-        emotion_weight=config.loss.emotion_weight,
-        identity_weight=config.loss.identity_weight
-    )
+    criterion = IRFDLoss(config,accelerator.device)
     # Check for existing checkpoint
     start_epoch = 0
     latest_checkpoint = None
@@ -436,10 +417,8 @@ def main():
 
         preprocess = transforms.Compose([
             transforms.Resize((resolution, resolution)),
-            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize([0.5], [0.5]),
-            transforms.Lambda(lambda x: (x / 255.0)),  # Normalize to [0, 1]
             ])
 
         # preprocess = transforms.Compose([
@@ -504,7 +483,7 @@ def main():
 
     accelerator.end_training()
     writer.close()
-    criterion.__del__()  # Clean up MediaPipe resources
+
 
 if __name__ == "__main__":
     main()

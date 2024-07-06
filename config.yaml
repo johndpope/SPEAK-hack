@@ -67,7 +67,11 @@ stylegan:
   n_mlp: 8
   channel_multiplier: 2
 
-
+weights:
+  face_recognition: 1
+  emotion: 1
+  landmark: 1
+  
 loss:
   alpha: 0.1
   lpips_weight: 1.0

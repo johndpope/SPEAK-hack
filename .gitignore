@@ -14,3 +14,4 @@ __pycache__/model.cpython-311.pyc
 CIPS/ffhq1024_g_ema.zip
 speak_stylegan/best_model-epoch-1
 __pycache__/model.cpython-311.pyc
+shape_predictor_68_face_landmarks.dat
