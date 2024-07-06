@@ -132,7 +132,6 @@ def compute_gradient_penalty(discriminator, real_samples, fake_samples):
     gradient_penalty = ((gradients.norm(2, dim=1) - 1) ** 2).mean()
     return gradient_penalty
 
-
 def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, accelerator, epoch, writer):
     model.train()
     total_loss_G = 0
@@ -140,82 +139,44 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
     progress_bar = tqdm(total=len(dataloader), disable=not accelerator.is_local_main_process)
     progress_bar.set_description(f"Epoch {epoch+1}")
 
-    # Timing variables
-    total_time = 0
-    data_loading_time = 0
-    forward_pass_time = 0
-    d_loss_time = 0
-    g_loss_time = 0
-    backward_time = 0
-    optimizer_step_time = 0
-    logging_time = 0
-
-    epoch_start_time = time.time()
-
     for step, batch in enumerate(dataloader):
-        step_start_time = time.time()
-
         with accelerator.accumulate(model):
-            # Data loading time
-            data_load_end = time.time()
-            data_loading_time += data_load_end - step_start_time
-
             x_s, x_t = batch["source_image"], batch["target_image"]
             emotion_labels_s, emotion_labels_t = batch["emotion_labels_s"], batch["emotion_labels_t"]
+            # print(f"Input shapes: x_s: {x_s.shape}, x_t: {x_t.shape}")
 
-            # Train Discriminator
+             # Train Discriminator
             optimizer_D.zero_grad()
-            
-            # Forward pass time
-            forward_start = time.time()
+
             outputs = model(x_s, x_t)
             x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, _, _ = outputs
-            forward_end = time.time()
-            forward_pass_time += forward_end - forward_start
 
-            # Discriminator loss time
-            d_loss_start = time.time()
             d_real_s = model.D(x_s)
             d_real_t = model.D(x_t)
             d_fake_s = model.D(x_s_recon.detach())
             d_fake_t = model.D(x_t_recon.detach())
 
-            loss_D_real = (
-                F.binary_cross_entropy_with_logits(d_real_s, torch.ones_like(d_real_s)) +
-                F.binary_cross_entropy_with_logits(d_real_t, torch.ones_like(d_real_t))
-            )
-            loss_D_fake = (
-                F.binary_cross_entropy_with_logits(d_fake_s, torch.zeros_like(d_fake_s)) +
-                F.binary_cross_entropy_with_logits(d_fake_t, torch.zeros_like(d_fake_t))
-            )
+            # Hinge loss for StyleGAN
+            loss_D_real = (F.relu(1 - d_real_s) + F.relu(1 - d_real_t)).mean()
+            loss_D_fake = (F.relu(1 + d_fake_s) + F.relu(1 + d_fake_t)).mean()
+            # print("loss_D_real:",loss_D_real)
+            # print("loss_D_fake:",loss_D_fake)
+            
 
-            # Compute gradient penalty
-            gradient_penalty_s = compute_gradient_penalty(model.D, x_s, x_s_recon.detach())
-            gradient_penalty_t = compute_gradient_penalty(model.D, x_t, x_t_recon.detach())
-            gradient_penalty = (gradient_penalty_s + gradient_penalty_t) / 2
+            # R1 regularization
+            r1_reg_s = compute_r1_reg(model.D, x_s)
+            r1_reg_t = compute_r1_reg(model.D, x_t)
+            r1_reg = (r1_reg_s + r1_reg_t) / 2
+            # print("r1_reg:",r1_reg)
 
-            loss_D = loss_D_real + loss_D_fake + config.training.gp_weight * gradient_penalty
+            loss_D = loss_D_real + loss_D_fake + config.training.r1_weight * r1_reg
 
-            d_loss_end = time.time()
-            d_loss_time += d_loss_end - d_loss_start
-
-            # Backward pass time (Discriminator)
-            backward_start = time.time()
             accelerator.backward(loss_D)
-            backward_end = time.time()
-            backward_time += backward_end - backward_start
-
-            # Optimizer step time (Discriminator)
-            optim_start = time.time()
             optimizer_D.step()
-            optim_end = time.time()
-            optimizer_step_time += optim_end - optim_start
 
             # Train Generator
             optimizer_G.zero_grad()
 
-            # Generator loss time
-            g_loss_start = time.time()
             l_pose_landmark, l_emotion, l_identity, l_recon = criterion(
                 x_s, x_t, x_s_recon, x_t_recon, fi_s, fe_s, fp_s, fi_t, fe_t, fp_t, 
                 emotion_labels_s, emotion_labels_t
@@ -224,29 +185,17 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
             d_fake_s = model.D(x_s_recon)
             d_fake_t = model.D(x_t_recon)
             
-            loss_G_adv = (
-                F.binary_cross_entropy_with_logits(d_fake_s, torch.ones_like(d_fake_s)) +
-                F.binary_cross_entropy_with_logits(d_fake_t, torch.ones_like(d_fake_t))
-            )
+            # Hinge loss for StyleGAN
+            loss_G_adv = -(d_fake_s + d_fake_t).mean()
 
-            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv
-            g_loss_end = time.time()
-            g_loss_time += g_loss_end - g_loss_start
+            loss_G = l_pose_landmark + l_emotion + l_identity + l_recon + config.training.stylegan_loss_weight * loss_G_adv 
 
-            # Backward pass time (Generator)
-            backward_start = time.time()
             accelerator.backward(loss_G)
-            backward_end = time.time()
-            backward_time += backward_end - backward_start
             
             if config.training.grad_clip:
                 accelerator.clip_grad_norm_(model.parameters(), config.training.grad_clip_value)
             
-            # Optimizer step time (Generator)
-            optim_start = time.time()
             optimizer_G.step()
-            optim_end = time.time()
-            optimizer_step_time += optim_end - optim_start
 
         if accelerator.sync_gradients:
             progress_bar.update(1)
@@ -255,8 +204,6 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
 
         global_step = epoch * len(dataloader) + step
         if accelerator.is_main_process:
-            # Logging time
-            log_start = time.time()
             if step % config.training.logging_steps == 0:
                 print(f"Epoch {epoch+1}, Step {step}: loss_G = {loss_G.item():.4f}, loss_D = {loss_D.item():.4f}")
                 writer.add_scalar('Loss/Train/Generator', loss_G.item(), global_step)
@@ -265,45 +212,53 @@ def train_epoch(config, model, dataloader, optimizer_G, optimizer_D, criterion, 
                 writer.add_scalar('Loss/Train/Emotion', l_emotion.item(), global_step)
                 writer.add_scalar('Loss/Train/Identity', l_identity.item(), global_step)
                 writer.add_scalar('Loss/Train/Reconstruction', l_recon.item(), global_step)
-                writer.add_scalar('Loss/Train/GradientPenalty', gradient_penalty.item(), global_step)
+                writer.add_scalar('Loss/Train/R1_Regularization', r1_reg.item(), global_step)
+                # writer.add_scalar('Loss/Train/PathLengthRegularization', pl_reg.item(), global_step)
 
             if global_step % config.training.save_image_steps == 0:
                 save_debug_images(x_s, x_t, x_s_recon, x_t_recon, epoch, step, config.training.output_dir)
 
             if global_step % config.training.save_steps == 0:
                 save_path = os.path.join(config.training.output_dir, f"best_model-epoch-{epoch+1}-{global_step}")
-                state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
-                    
+
                 accelerator.save({
-                    'model': state_dict,
+                    'model_state_dict': model.state_dict(),  # Save only the state dict
                     'optimizer_G': optimizer_G.state_dict(),
                     'optimizer_D': optimizer_D.state_dict(),
                     'epoch': epoch,
                     'resolution': model.current_resolution,
                     'config': config,
                 }, save_path)
-            log_end = time.time()
-            logging_time += log_end - log_start
-
-        total_time += time.time() - step_start_time
-
-    epoch_end_time = time.time()
-    epoch_duration = epoch_end_time - epoch_start_time
-
-    # Print timing statistics
-    print(f"\nEpoch {epoch+1} timing statistics:")
-    print(f"Total epoch time: {epoch_duration:.2f} seconds")
-    print(f"Data loading: {data_loading_time:.2f} seconds ({data_loading_time/epoch_duration*100:.2f}%)")
-    print(f"Forward pass: {forward_pass_time:.2f} seconds ({forward_pass_time/epoch_duration*100:.2f}%)")
-    print(f"Discriminator loss: {d_loss_time:.2f} seconds ({d_loss_time/epoch_duration*100:.2f}%)")
-    print(f"Generator loss: {g_loss_time:.2f} seconds ({g_loss_time/epoch_duration*100:.2f}%)")
-    print(f"Backward pass: {backward_time:.2f} seconds ({backward_time/epoch_duration*100:.2f}%)")
-    print(f"Optimizer step: {optimizer_step_time:.2f} seconds ({optimizer_step_time/epoch_duration*100:.2f}%)")
-    print(f"Logging: {logging_time:.2f} seconds ({logging_time/epoch_duration*100:.2f}%)")
-    print(f"Other: {(epoch_duration - total_time):.2f} seconds ({(epoch_duration - total_time)/epoch_duration*100:.2f}%)")
 
     return total_loss_G.item() / len(dataloader), total_loss_D.item() / len(dataloader)
 
+def compute_r1_reg(D, real_img):
+    real_img = real_img.requires_grad_(True)
+    real_pred = D(real_img)
+    
+    grad_real = torch.autograd.grad(
+        outputs=real_pred.sum(), inputs=real_img, create_graph=True
+    )[0]
+    grad_penalty = grad_real.pow(2).reshape(grad_real.shape[0], -1).sum(1).mean()
+
+    return grad_penalty
+
+def compute_path_length_regularization(G, latents, gen_img1, gen_img2):
+    noise = torch.randn_like(gen_img1) / (gen_img1.shape[2] * gen_img1.shape[3]) ** 0.5
+
+    grad1, grad2 = torch.autograd.grad(
+        outputs=(gen_img1 * noise).sum() + (gen_img2 * noise).sum(),
+        inputs=latents,
+        create_graph=True,
+        only_inputs=True,
+    )[0]
+
+    path_lengths = torch.sqrt(grad1.pow(2).sum(2).mean(1) + grad2.pow(2).sum(2).mean(1))
+
+    pl_mean = path_lengths.mean()
+    pl_length = ((path_lengths - pl_mean) ** 2).mean()
+
+    return pl_length
 
 def validate(config, model, dataloader, criterion, accelerator, stylegan_loss, current_resolution):
     model.eval()
@@ -414,13 +369,12 @@ def main():
     # Load checkpoint if exists
     if latest_checkpoint:
         checkpoint = torch.load(latest_checkpoint, map_location=accelerator.device)
-        model.load_state_dict(checkpoint['model'])
+        model.load_state_dict(checkpoint['model_state_dict'])  # Load the state dict
         optimizer_G.load_state_dict(checkpoint['optimizer_G'])
         optimizer_D.load_state_dict(checkpoint['optimizer_D'])
         start_epoch = checkpoint['epoch'] + 1
         current_resolution = checkpoint['resolution']
         config = checkpoint['config']
-        # model.Gd.set_fourier_state(checkpoint['Gd_fourier_state'])
         print(f"Resumed training from epoch {start_epoch}, resolution {current_resolution}")
 
     # Set up preprocessing
@@ -458,7 +412,7 @@ def main():
     scheduler_D = ReduceLROnPlateau(optimizer_D, mode='min', factor=0.1, patience=config.training.early_stopping_patience)
     writer = SummaryWriter(log_dir=os.path.join(config.training.output_dir, "logs"))
 
-    resolutions = [64, 128, 256]
+    resolutions = [256] #64, 128, 
     epochs_per_resolution = config.training.epochs_per_resolution
 
     for resolution in resolutions:
@@ -520,9 +474,8 @@ def main():
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 if accelerator.is_main_process:
-                    state_dict = accelerator.unwrap_model(model).get_state_dict()  # Use the custom get_state_dict method
                     accelerator.save({
-                        'model': state_dict,
+                        'model': model,
                         'optimizer_G': optimizer_G.state_dict(),
                         'optimizer_D': optimizer_D.state_dict(),
                         'epoch': epoch,
